@@ -1,0 +1,26 @@
+# Normalize line endings: store text as LF in the repo, check out native on each OS.
+* text=auto
+
+# Explicit text types
+*.cs        text
+*.csproj    text
+*.sln       text
+*.props     text
+*.targets   text
+*.json      text
+*.xml       text
+*.md        text
+*.ps1       text
+*.psm1      text
+*.py        text
+*.editorconfig text
+
+# WDAC / driver / signing binaries and other binary assets
+*.cip       binary
+*.p7b       binary
+*.pfx       binary
+*.cer       binary
+*.onnx      binary
+*.dll       binary
+*.exe       binary
+*.sys       binary

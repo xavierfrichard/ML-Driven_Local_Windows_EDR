@@ -1,0 +1,56 @@
+# Build output
+[Bb]in/
+[Oo]bj/
+[Oo]ut/
+artifacts/
+
+# Visual Studio / Rider / VS Code
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# .NET
+project.lock.json
+*.nupkg
+*.snupkg
+msbuild.log
+msbuild.binlog
+
+# Test / coverage
+[Tt]est[Rr]esult*/
+coverage*.json
+coverage*.xml
+coverage*.info
+*.coverage
+*.trx
+
+# ML training artifacts (models are versioned separately, datasets are never committed)
+ml-training/data/
+ml-training/__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Local secrets / config (API keys for the LLM and VirusTotal tiers must never be committed)
+appsettings.*.local.json
+secrets.json
+*.env
+.env
+
+# WDAC / driver build outputs and test signing material (never commit signing keys)
+*.cip
+*.p7b
+*.cer
+*.pfx
+kernel/**/x64/
+kernel/**/Debug/
+kernel/**/Release/
+
+# OS cruft
+Thumbs.db
+Desktop.ini
+.DS_Store

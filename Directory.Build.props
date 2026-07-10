@@ -1,0 +1,15 @@
+<Project>
+
+  <!-- Shared build settings for every project in the Warden solution. -->
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <Deterministic>true</Deterministic>
+    <Company>Warden</Company>
+    <Product>Warden Zero-Trust Agent</Product>
+  </PropertyGroup>
+
+</Project>

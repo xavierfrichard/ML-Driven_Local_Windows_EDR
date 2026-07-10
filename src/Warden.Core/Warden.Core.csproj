@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>Warden.Core</RootNamespace>
+    <AssemblyName>Warden.Core</AssemblyName>
+    <Description>Domain contracts and the decision pipeline for the Warden zero-trust agent.</Description>
+  </PropertyGroup>
+
+</Project>
