@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Phase 0 spike console app.
+
+    Notes:
+      * net8.0-windows: needed for the in-box System.Diagnostics.Eventing.Reader
+        (EventLogWatcher) used to read the CodeIntegrity/Operational channel.
+      * x64 only: the NT Kernel Logger structures and kernel->DOS path mapping are
+        bitness-sensitive; the research is explicit that the consumer must be 64-bit.
+      * NO app.manifest with requireAdministrator: the selftest mode must run as a
+        normal (non-elevated) user so it can be smoke-tested on the host. Elevation for
+        the watch mode is detected at runtime instead.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>Warden.Spike</RootNamespace>
+    <AssemblyName>Warden.Spike</AssemblyName>
+    <!-- PlatformTarget x64 forces 64-bit codegen (kernel ETW needs it) while keeping the solution's
+         "Any CPU" configuration name, so no per-project solution platform is required. -->
+    <PlatformTarget>x64</PlatformTarget>
+    <Description>Phase 0 spike: correlate WDAC/App Control block events with process-start ETW telemetry into a printed dossier.</Description>
+    <!--
+      Spike console formatting: invariant-culture display strings (CA1305), the QueryDosDevice
+      StringBuilder P/Invoke (CA1838), and a device-path Substring (CA1845) are all intentional here
+      and not worth the churn for a Phase-0 spike. Suppress just these.
+    -->
+    <NoWarn>$(NoWarn);CA1305;CA1838;CA1845</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Real-time NT Kernel Logger + manifest ETW consumer. 3.1.x per the author task. -->
+    <PackageReference Include="Microsoft.Diagnostics.Tracing.TraceEvent" Version="3.1.16" />
+    <!-- Explicit reference so the EventLogWatcher API is guaranteed present on all SDKs. -->
+    <PackageReference Include="System.Diagnostics.EventLog" Version="8.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Warden.Core\Warden.Core.csproj" />
+  </ItemGroup>
+
+</Project>

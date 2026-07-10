@@ -1,0 +1,176 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ====================================================================
+  Warden Phase 0 Spike : SUPPLEMENTAL App Control policy (hand-authored)
+  ====================================================================
+
+  PURPOSE
+  This is the small, hand-authored piece that Warden actually ships. It is a
+  WDAC / "App Control for Business" SUPPLEMENTAL policy in the multiple-policy
+  format. Its only job is to ADD an allow-by-hash for the lab test executable
+  so that a binary which was previously would-be-blocked (audit) / blocked
+  (enforce) under the base policy now runs.
+
+  This file rehearses the real Warden loop:
+      user clicks "Allow" then Warden regenerates this supplemental with the
+      offending file's hash then CiTool -update-policy then the app runs.
+
+  WHY A SUPPLEMENTAL AND WHY BY HASH
+  * The BASE policy (derived by the deploy script from Microsoft's shipped
+    DefaultWindows_Audit.xml) already safely allows all of Windows via SIGNER
+    rules, but it does NOT allow an unsigned binary sitting in a user folder.
+    That binary is therefore blocked by the ABSENCE of any matching allow,
+    NOT by an explicit Deny rule. This distinction is load-bearing:
+
+        WDAC precedence = (1) all Deny rules, then (2) all Allow rules.
+        A Deny ALWAYS wins. If the base had explicitly DENIED the exe, no
+        supplemental Allow could ever rescue it. Because the block comes from
+        absence-of-allow, adding an Allow here (union of allows across
+        base plus supplemental) is enough to let the file run.
+
+  * We allow by HASH (Authenticode SHA-256), not by file path, because:
+      - A hash allow is deterministic and needs no extra rule options.
+      - A path allow to a user-writable folder (e.g. under %USERPROFILE%) is
+        REFUSED at runtime by WDAC unless option 18
+        (Disabled:Runtime FilePath Rule Protection) is set, which weakens
+        security. Hash avoids that question entirely.
+
+  IDs AND LINKAGE (multiple-policy format)
+  * PolicyType="Supplemental Policy" selects the multiple-policy format
+    and marks this as a supplemental (not a base).
+  * PolicyID is this supplemental's OWN unique GUID (fixed below). The
+    compiled binary MUST be named "{PolicyID}.cip".
+  * BasePolicyID is the PolicyID of the BASE policy this supplemental expands.
+    Because the base is generated fresh (Set-CIPolicyIdInfo -ResetPolicyID)
+    every deployment, its GUID is not known until deploy time. The value below
+    is a PLACEHOLDER; the deploy script fills it in via
+    "Set-CIPolicyIdInfo -SupplementsBasePolicyID {baseGuid}".
+  * A supplemental expands EXACTLY ONE base. The base must opt in to being
+    supplemented with rule option 17 (Enabled:Allow Supplemental Policies);
+    the deploy script guarantees that on the base.
+
+  AUDIT vs ENFORCE
+  Enforcement state (audit = would-block plus log 3076, enforce = block plus
+  log 3077) is a property of the BASE policy only. A supplemental cannot set
+  its own audit mode; it inherits the base's. That is why this file carries NO
+  option 3 (Audit Mode). Warden flips audit and enforce on the base, never here.
+
+  Rule options legal in a supplemental are limited; we use only:
+      6  Enabled:Unsigned System Integrity Policy  (keep it unsigned/rebootless)
+      5  Enabled:Inherit Default Policy            (shipped supplementals carry it)
+  ====================================================================
+-->
+<SiPolicy xmlns="urn:schemas-microsoft-com:sipolicy" PolicyType="Supplemental Policy">
+
+  <!-- 4-part version. A replacement supplemental must be at least the active
+       one. The deploy script bumps the 4th component on each redeploy. -->
+  <VersionEx>1.0.0.0</VersionEx>
+
+  <!-- Constant Windows platform GUID. Never change. -->
+  <PlatformID>{2E07F7E4-194C-4D20-B7C9-6F44A6C5A234}</PlatformID>
+
+  <!-- Rule options valid inside a supplemental. Audit mode (option 3) is
+       DELIBERATELY absent; it belongs to the base only. -->
+  <Rules>
+    <!-- Option 6: keep this policy UNSIGNED, so it deploys rebootless via CiTool. -->
+    <Rule><Option>Enabled:Unsigned System Integrity Policy</Option></Rule>
+    <!-- Option 5: reserved/no-op today, but every shipped supplemental sets it. -->
+    <Rule><Option>Enabled:Inherit Default Policy</Option></Rule>
+  </Rules>
+
+  <!-- No custom Enhanced Key Usages are referenced. Present but empty. -->
+  <EKUs />
+
+  <FileRules>
+    <!--
+      The single allow-by-hash for the lab exe.
+
+      The Hash attribute below is a CLEARLY-MARKED PLACEHOLDER. It is NOT a real
+      hash of any file, and it is DELIBERATELY an INVALID Authenticode hash (not
+      the 64/40 hex characters a real SHA-256/SHA-1 hash requires). This makes the
+      checked-in file FAIL LOUD: a hand-deploy that skips regeneration (i.e. runs
+      ConvertFrom-CIPolicy on this file directly instead of using the deploy
+      script) will error out on the malformed hash rather than silently shipping
+      a bogus-but-valid allow rule.
+
+      The deploy script (Deploy-WardenSpikePolicy.ps1) does NOT use this value: it
+      CLEARS the whole <FileRules> block and rebuilds it from the real Authenticode
+      SHA-256 hashes computed with New-CIPolicy -Level Hash over an isolated copy
+      of the target binary(ies) before compiling. So this placeholder only ever
+      matters as a tripwire for hand-deploys.
+
+      A single WDAC allow-by-hash matches if ANY listed hash matches, so the
+      deploy script may add sibling Allow entries (e.g. the SHA-256 first-page
+      hash) alongside this one for robustness; each gets its own FileRuleRef in
+      the user-mode signing scenario below.
+    -->
+    <Allow ID="ID_ALLOW_WARDEN_LABEXE"
+           FriendlyName="PLACEHOLDER - regenerated at deploy; invalid on purpose so a hand-deploy fails"
+           Hash="PLACEHOLDER_INVALID_HASH_DO_NOT_DEPLOY_REGENERATED_AT_DEPLOY_TIME" />
+  </FileRules>
+
+  <!-- No certificate-based signer rules in this supplemental (we allow by hash). -->
+  <Signers />
+
+  <!--
+    Signing scenarios ACTIVATE file rules by referencing them. A rule that is
+    not referenced here is inert. Both scenarios must be present:
+      Value="131" = kernel mode (drivers); nothing to allow here.
+      Value="12"  = user mode (exe/dll/scripts); our hash allow lives here,
+                    because a hash/path user-binary allow only applies to
+                    user-mode code.
+  -->
+  <SigningScenarios>
+    <SigningScenario Value="131" ID="ID_SIGNINGSCENARIO_DRIVERS" FriendlyName="Kernel Mode">
+      <ProductSigners />
+    </SigningScenario>
+    <SigningScenario Value="12" ID="ID_SIGNINGSCENARIO_WINDOWS" FriendlyName="User Mode">
+      <ProductSigners>
+        <FileRulesRef>
+          <!-- Activates the hash allow above. The deploy script adds more
+               FileRuleRef entries here if it injects extra sibling hashes. -->
+          <FileRuleRef RuleID="ID_ALLOW_WARDEN_LABEXE" />
+        </FileRulesRef>
+      </ProductSigners>
+    </SigningScenario>
+  </SigningScenarios>
+
+  <!-- Empty for an unsigned policy: no signers are trusted to update it. -->
+  <UpdatePolicySigners />
+
+  <!-- No user-mode CI signers. Present but empty. -->
+  <CiSigners />
+
+  <!-- Hypervisor-enforced Code Integrity off for the spike (0). Keeps
+       deployment rebootless and avoids the pre-24H2 signed-base/HVCI caveat. -->
+  <HvciOptions>0</HvciOptions>
+
+  <!--
+    LINKAGE (the two GUIDs that make this a supplemental of a specific base).
+    Shipped supplemental examples place these AFTER HvciOptions, so we do too.
+
+    BasePolicyID: all-zeros PLACEHOLDER. The deploy script overwrites it with the
+    fresh base policy's PolicyID via Set-CIPolicyIdInfo -SupplementsBasePolicyID,
+    and then REFUSES to compile/deploy if the linkage is still all-zeros (an
+    all-zeros BasePolicyID supplements no real base and is inert). Left as-is here
+    only so hand-deploys are inert rather than surprising.
+  -->
+  <BasePolicyID>{00000000-0000-0000-0000-000000000000}</BasePolicyID>
+
+  <!-- PolicyID: this supplemental's OWN fixed GUID. Stable across deployments
+       so redeploys UPDATE this supplemental rather than stacking new ones.
+       The compiled binary must be named "{7A4D1C0A-5B2E-4F6A-9C3D-000000000001}.cip". -->
+  <PolicyID>{7A4D1C0A-5B2E-4F6A-9C3D-000000000001}</PolicyID>
+
+  <!-- Friendly Name/Id strings surfaced by CiTool -list-policies. The deploy
+       and remove scripts match on the "Warden" prefix to find these. -->
+  <Settings>
+    <Setting Provider="PolicyInfo" Key="Information" ValueName="Name">
+      <Value><String>Warden Spike Supplemental (Allow user binaries)</String></Value>
+    </Setting>
+    <Setting Provider="PolicyInfo" Key="Information" ValueName="Id">
+      <Value><String>WardenSpikeSupplemental</String></Value>
+    </Setting>
+  </Settings>
+
+</SiPolicy>
