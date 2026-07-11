@@ -130,5 +130,37 @@ public sealed class WardenDb : IWardenDatabase
             Key   TEXT PRIMARY KEY,
             Value TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS attack_chains (
+            Id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            SessionGuid    TEXT    NOT NULL,
+            NodePid        INTEGER NOT NULL,
+            ParentPid      INTEGER NOT NULL,
+            ImagePath      TEXT    NOT NULL,
+            Sha256         TEXT,
+            CommandLine    TEXT    NOT NULL DEFAULT '',
+            Timestamp      TEXT    NOT NULL,
+            Depth          INTEGER NOT NULL DEFAULT 0,
+            SuspicionScore REAL    NOT NULL DEFAULT 0,
+            LlmRationale   TEXT
+        );
+        CREATE INDEX IF NOT EXISTS IX_attack_chains_session ON attack_chains(SessionGuid);
+
+        CREATE TABLE IF NOT EXISTS protected_folders (
+            Id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            Path        TEXT    NOT NULL,
+            Recursive   INTEGER NOT NULL DEFAULT 1,
+            MonitorMode TEXT    NOT NULL DEFAULT 'monitor',
+            AddedTs     TEXT    NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS reputation_cache (
+            Sha256      TEXT PRIMARY KEY,
+            VtPositives INTEGER NOT NULL DEFAULT 0,
+            VtTotal     INTEGER NOT NULL DEFAULT 0,
+            VtFirstSeen TEXT,
+            CachedTs    TEXT    NOT NULL,
+            TtlSecs     INTEGER NOT NULL DEFAULT 86400
+        );
         """;
 }

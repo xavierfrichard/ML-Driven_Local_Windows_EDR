@@ -1,9 +1,14 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Warden.Amsi;
+using Warden.AttackChain;
 using Warden.Core;
 using Warden.Etw;
 using Warden.Ipc;
+using Warden.Monitoring;
+using Warden.Quarantine;
+using Warden.Reputation;
 using Warden.Rules;
 using Warden.Service;
 using Warden.Storage;
@@ -22,6 +27,13 @@ builder.Services.AddWardenTrust();
 builder.Services.AddWardenRules();
 builder.Services.AddWardenWdac();
 builder.Services.AddWardenIpcServer();
+
+// Phase 2 telemetry + reputation.
+builder.Services.AddWardenReputation();   // adds the VirusTotal IVerdictSource (pipeline tier 4)
+builder.Services.AddWardenAttackChain();
+builder.Services.AddWardenQuarantine();
+builder.Services.AddWardenAmsi();
+builder.Services.AddWardenMonitoring();
 
 // The decision pipeline is composed from every registered IVerdictSource, ordered cheap->expensive by
 // VerdictSourceKind (Rules -> TrustGate -> Whitelist -> ...). A source that throws is logged and skipped;

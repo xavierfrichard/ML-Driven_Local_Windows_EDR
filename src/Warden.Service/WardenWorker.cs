@@ -1,6 +1,8 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Warden.AttackChain;
 using Warden.Etw;
+using Warden.Monitoring;
 using Warden.Storage;
 
 namespace Warden.Service;
@@ -15,6 +17,9 @@ public sealed class WardenWorker : BackgroundService
     private readonly IProcessStartSource _processStarts;
     private readonly ICodeIntegrityBlockSource _blocks;
     private readonly EnforcementController _controller;
+    private readonly IProcessTreeBuilder _tree;
+    private readonly ICommandLineRecorder _commandLines;
+    private readonly IProtectedFolderMonitor _folders;
     private readonly ILogger<WardenWorker> _logger;
 
     public WardenWorker(
@@ -22,12 +27,18 @@ public sealed class WardenWorker : BackgroundService
         IProcessStartSource processStarts,
         ICodeIntegrityBlockSource blocks,
         EnforcementController controller,
+        IProcessTreeBuilder tree,
+        ICommandLineRecorder commandLines,
+        IProtectedFolderMonitor folders,
         ILogger<WardenWorker> logger)
     {
         _database = database;
         _processStarts = processStarts;
         _blocks = blocks;
         _controller = controller;
+        _tree = tree;
+        _commandLines = commandLines;
+        _folders = folders;
         _logger = logger;
     }
 
@@ -37,7 +48,13 @@ public sealed class WardenWorker : BackgroundService
         _logger.LogInformation("Warden database ready at {Path}", _database.DatabasePath);
 
         _processStarts.ProcessStarted += _controller.RecordProcessStart;
+        _processStarts.ProcessStarted += _tree.RecordStart;
         _blocks.BlockObserved += _controller.EnqueueBlock;
+
+        // Telemetry panels: command-line recorder subscribes to the same process-start source; the
+        // protected-folder monitor spins up its file watchers. Both are best-effort.
+        SafeStart(_commandLines.Start, nameof(ICommandLineRecorder));
+        SafeStart(_folders.Start, nameof(IProtectedFolderMonitor));
 
         bool telemetryUp = TryStartTelemetry();
         if (!telemetryUp)
@@ -53,10 +70,25 @@ public sealed class WardenWorker : BackgroundService
         }
         finally
         {
+            SafeStop(_commandLines.Stop, nameof(ICommandLineRecorder));
+            SafeStop(_folders.Stop, nameof(IProtectedFolderMonitor));
             _processStarts.ProcessStarted -= _controller.RecordProcessStart;
+            _processStarts.ProcessStarted -= _tree.RecordStart;
             _blocks.BlockObserved -= _controller.EnqueueBlock;
             SafeStop(_processStarts.Stop, nameof(IProcessStartSource));
             SafeStop(_blocks.Stop, nameof(ICodeIntegrityBlockSource));
+        }
+    }
+
+    private void SafeStart(Action start, string name)
+    {
+        try
+        {
+            start();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Error starting {Component}", name);
         }
     }
 

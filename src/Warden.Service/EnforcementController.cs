@@ -1,8 +1,10 @@
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
+using Warden.AttackChain;
 using Warden.Core;
 using Warden.Etw;
 using Warden.Ipc;
+using Warden.Quarantine;
 using Warden.Storage;
 using Warden.Trust;
 using Warden.Wdac;
@@ -32,6 +34,8 @@ public sealed class EnforcementController
     private readonly IWdacAllowlistManager _wdac;
     private readonly IPromptPresenter _presenter;
     private readonly IWhitelistRepository _whitelist;
+    private readonly IProcessTreeBuilder _tree;
+    private readonly IQuarantineStore _quarantine;
     private readonly ILogger<EnforcementController> _logger;
 
     private readonly Channel<CiBlockEvent> _blocks =
@@ -47,6 +51,8 @@ public sealed class EnforcementController
         IWdacAllowlistManager wdac,
         IPromptPresenter presenter,
         IWhitelistRepository whitelist,
+        IProcessTreeBuilder tree,
+        IQuarantineStore quarantine,
         ILogger<EnforcementController> logger)
     {
         _pipeline = pipeline;
@@ -54,6 +60,8 @@ public sealed class EnforcementController
         _wdac = wdac;
         _presenter = presenter;
         _whitelist = whitelist;
+        _tree = tree;
+        _quarantine = quarantine;
         _logger = logger;
     }
 
@@ -122,9 +130,7 @@ public sealed class EnforcementController
                 break;
 
             case Verdict.Quarantine:
-                // Phase 2 adds the actual quarantine move; for now record the decision.
-                await RecordAsync(ctx, PolicyAction.Block, result.Source.ToString(), ct).ConfigureAwait(false);
-                _logger.LogWarning("Quarantine requested for {File} (quarantine store lands in Phase 2).", ctx.ImageName);
+                await ApplyQuarantineAsync(ctx, result.Source.ToString(), ct).ConfigureAwait(false);
                 break;
 
             case Verdict.Prompt:
@@ -162,8 +168,7 @@ public sealed class EnforcementController
                 break;
 
             case PromptDecision.Quarantine:
-                await RecordAsync(ctx, PolicyAction.Block, VerdictSourceKind.UserPrompt.ToString(), ct).ConfigureAwait(false);
-                _logger.LogWarning("Quarantine requested for {File} (quarantine store lands in Phase 2).", ctx.ImageName);
+                await ApplyQuarantineAsync(ctx, VerdictSourceKind.UserPrompt.ToString(), ct).ConfigureAwait(false);
                 break;
 
             case PromptDecision.KeepBlocked:
@@ -193,6 +198,24 @@ public sealed class EnforcementController
         else
         {
             _logger.LogError("WDAC allow FAILED for {File}: {Error}", ctx.ImageName, update.Error);
+        }
+    }
+
+    private async Task ApplyQuarantineAsync(VerdictContext ctx, string source, CancellationToken ct)
+    {
+        await RecordAsync(ctx, PolicyAction.Block, source, ct).ConfigureAwait(false);
+
+        QuarantineResult result = await _quarantine
+            .QuarantineAsync(ctx.ImagePath, $"Quarantined by {source}", source, ct)
+            .ConfigureAwait(false);
+
+        if (result.Success)
+        {
+            _logger.LogWarning("Quarantined {File} -> {Dest}", ctx.ImageName, result.QuarantinePath);
+        }
+        else
+        {
+            _logger.LogError("Quarantine FAILED for {File}: {Error}", ctx.ImageName, result.Error);
         }
     }
 
@@ -254,7 +277,7 @@ public sealed class EnforcementController
             Signer: signer,
             MotwZone: motw,
             Pe: new Lazy<PeFeatures>(() => PeFeatures.NotPortableExecutable),
-            Chain: AttackChainNode.None,
+            Chain: correlated is not null ? _tree.BuildChainFor(correlated.Pid) : AttackChainNode.None,
             Timestamp: block.TimeCreated,
             CorrelationId: NextCorrelationId(block));
     }

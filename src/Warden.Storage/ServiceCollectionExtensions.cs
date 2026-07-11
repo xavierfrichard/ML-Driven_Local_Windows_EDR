@@ -14,6 +14,11 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IWardenDatabase, WardenDb>();
         services.AddSingleton<IWhitelistRepository, WhitelistRepository>();
         services.AddSingleton<IRulesRepository, RulesRepository>();
+        services.AddSingleton<IAttackChainRepository, AttackChainRepository>();
+        services.AddSingleton<ICommandLineRepository, CommandLineRepository>();
+        services.AddSingleton<IQuarantineRepository, QuarantineRepository>();
+        services.AddSingleton<IProtectedFolderRepository, ProtectedFolderRepository>();
+        services.AddSingleton<IReputationCacheRepository, ReputationCacheRepository>();
         return services;
     }
 }

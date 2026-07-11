@@ -1,14 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net8.0-windows</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
 
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
-
-    <!-- Underscored Given_When_Then test names are the intended xUnit convention here. -->
     <NoWarn>$(NoWarn);CA1707</NoWarn>
   </PropertyGroup>
 
@@ -26,8 +24,9 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Warden.Core\Warden.Core.csproj" />
     <ProjectReference Include="..\..\src\Warden.Storage\Warden.Storage.csproj" />
-    <ProjectReference Include="..\..\src\Warden.Rules\Warden.Rules.csproj" />
-    <ProjectReference Include="..\..\src\Warden.Reputation\Warden.Reputation.csproj" />
+    <ProjectReference Include="..\..\src\Warden.Etw\Warden.Etw.csproj" />
+    <ProjectReference Include="..\..\src\Warden.AttackChain\Warden.AttackChain.csproj" />
+    <ProjectReference Include="..\..\src\Warden.Quarantine\Warden.Quarantine.csproj" />
   </ItemGroup>
 
 </Project>

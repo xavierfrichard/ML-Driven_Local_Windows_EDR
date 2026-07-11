@@ -20,5 +20,10 @@
     <ProjectReference Include="..\Warden.Etw\Warden.Etw.csproj" />
     <ProjectReference Include="..\Warden.Trust\Warden.Trust.csproj" />
     <ProjectReference Include="..\Warden.Rules\Warden.Rules.csproj" />
+    <ProjectReference Include="..\Warden.Reputation\Warden.Reputation.csproj" />
+    <ProjectReference Include="..\Warden.AttackChain\Warden.AttackChain.csproj" />
+    <ProjectReference Include="..\Warden.Quarantine\Warden.Quarantine.csproj" />
+    <ProjectReference Include="..\Warden.Amsi\Warden.Amsi.csproj" />
+    <ProjectReference Include="..\Warden.Monitoring\Warden.Monitoring.csproj" />
   </ItemGroup>
 </Project>
