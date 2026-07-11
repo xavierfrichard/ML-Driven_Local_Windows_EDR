@@ -28,6 +28,11 @@
     <ProjectReference Include="..\..\src\Warden.Storage\Warden.Storage.csproj" />
     <ProjectReference Include="..\..\src\Warden.Rules\Warden.Rules.csproj" />
     <ProjectReference Include="..\..\src\Warden.Reputation\Warden.Reputation.csproj" />
+    <ProjectReference Include="..\..\src\Warden.Ml\Warden.Ml.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="parity\**\*.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

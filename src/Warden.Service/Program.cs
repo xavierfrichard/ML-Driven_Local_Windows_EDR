@@ -6,6 +6,7 @@ using Warden.AttackChain;
 using Warden.Core;
 using Warden.Etw;
 using Warden.Ipc;
+using Warden.Ml;
 using Warden.Monitoring;
 using Warden.Quarantine;
 using Warden.Reputation;
@@ -34,6 +35,7 @@ builder.Services.AddWardenAttackChain();
 builder.Services.AddWardenQuarantine();
 builder.Services.AddWardenAmsi();
 builder.Services.AddWardenMonitoring();
+builder.Services.AddWardenMl();          // adds the ONNX ML IVerdictSource (pipeline tier 5; disabled until a model exists)
 
 // The decision pipeline is composed from every registered IVerdictSource, ordered cheap->expensive by
 // VerdictSourceKind (Rules -> TrustGate -> Whitelist -> ...). A source that throws is logged and skipped;

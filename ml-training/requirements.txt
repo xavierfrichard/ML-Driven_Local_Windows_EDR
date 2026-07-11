@@ -1,0 +1,11 @@
+# Warden ML training / parity environment. Python 3.11–3.14.
+numpy>=1.26
+lief>=0.15
+scikit-learn>=1.4
+lightgbm>=4.0
+onnx>=1.16
+onnxmltools>=1.12
+skl2onnx>=1.16
+onnxruntime>=1.18
+# Optional: the `ember` package, only needed for --ember-dir (pre-vectorized EMBER 2018/2024 features).
+# ember @ git+https://github.com/elastic/ember.git

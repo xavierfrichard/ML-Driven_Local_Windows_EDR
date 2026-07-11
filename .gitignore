@@ -54,3 +54,7 @@ kernel/**/Release/
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# Phase 3 ML training artifacts (generated; models versioned separately)
+ml-training/artifacts/
+ml-training/__pycache__/
