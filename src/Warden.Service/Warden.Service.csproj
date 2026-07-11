@@ -26,5 +26,6 @@
     <ProjectReference Include="..\Warden.Amsi\Warden.Amsi.csproj" />
     <ProjectReference Include="..\Warden.Monitoring\Warden.Monitoring.csproj" />
     <ProjectReference Include="..\Warden.Ml\Warden.Ml.csproj" />
+    <ProjectReference Include="..\Warden.Llm\Warden.Llm.csproj" />
   </ItemGroup>
 </Project>

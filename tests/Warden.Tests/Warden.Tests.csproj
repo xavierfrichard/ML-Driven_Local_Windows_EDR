@@ -29,6 +29,7 @@
     <ProjectReference Include="..\..\src\Warden.Rules\Warden.Rules.csproj" />
     <ProjectReference Include="..\..\src\Warden.Reputation\Warden.Reputation.csproj" />
     <ProjectReference Include="..\..\src\Warden.Ml\Warden.Ml.csproj" />
+    <ProjectReference Include="..\..\src\Warden.Llm\Warden.Llm.csproj" />
   </ItemGroup>
 
   <ItemGroup>

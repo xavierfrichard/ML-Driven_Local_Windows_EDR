@@ -6,6 +6,7 @@ using Warden.AttackChain;
 using Warden.Core;
 using Warden.Etw;
 using Warden.Ipc;
+using Warden.Llm;
 using Warden.Ml;
 using Warden.Monitoring;
 using Warden.Quarantine;
@@ -36,6 +37,14 @@ builder.Services.AddWardenQuarantine();
 builder.Services.AddWardenAmsi();
 builder.Services.AddWardenMonitoring();
 builder.Services.AddWardenMl();          // adds the ONNX ML IVerdictSource (pipeline tier 5; disabled until a model exists)
+
+// Phase 4: LLM analyst tier (pipeline tier 6, the last before the user prompt). Disabled until a
+// provider is configured. The Claude Code OAuth provider stays off unless explicitly enabled (personal
+// machines only — see src/Warden.Llm/README.md). Configure the Anthropic API key from the environment.
+builder.Services.AddWardenLlm(options =>
+{
+    options.AnthropicApiKey = Environment.GetEnvironmentVariable("WARDEN_ANTHROPIC_API_KEY");
+});
 
 // The decision pipeline is composed from every registered IVerdictSource, ordered cheap->expensive by
 // VerdictSourceKind (Rules -> TrustGate -> Whitelist -> ...). A source that throws is logged and skipped;
