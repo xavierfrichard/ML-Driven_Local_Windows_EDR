@@ -21,7 +21,7 @@ public sealed class QuarantineOptions
 public sealed class QuarantineStore : IQuarantineStore
 {
     // Protected (no inheritance), full access to Local System (SY) and Builtin Administrators (BA) only.
-    private const string LockedDownSddl = "D:PAI(A;;FA;;;SY)(A;;FA;;;BA)";
+    private const string LockedDownDacl = "D:PAI(A;;FA;;;SY)(A;;FA;;;BA)";
 
     private readonly QuarantineOptions _options;
     private readonly IQuarantineRepository _repo;
@@ -54,7 +54,18 @@ public sealed class QuarantineStore : IQuarantineStore
             string dest = Path.Combine(_options.QuarantineDir, Guid.NewGuid().ToString("N") + ".quar");
             File.Move(filePath, dest);
 
-            LockDown(dest);
+            // Securing the quarantined copy is mandatory. If we cannot lock it down, do NOT leave an
+            // accessible-yet-recorded malware file lying in a predictable folder — delete it and fail.
+            try
+            {
+                LockDown(dest);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Could not secure quarantined file {Dest}; deleting it.", dest);
+                TryDelete(dest);
+                return QuarantineResult.Fail($"Failed to secure quarantined file: {ex.Message}");
+            }
 
             long id = await _repo.AddAsync(new QuarantineRecord
             {
@@ -93,12 +104,15 @@ public sealed class QuarantineStore : IQuarantineStore
                 return false;
             }
 
-            File.Move(record.QuarantinePath, record.OriginalPath);
-
+            // The quarantined file is locked to SYSTEM+Administrators. Re-grant access by restoring the
+            // original ACL onto it BEFORE moving it back — otherwise the move fails for lack of DELETE on
+            // the source. The store runs as SYSTEM (or is the owner), so it has WRITE_DAC to do this.
             if (!string.IsNullOrEmpty(record.RestoreAclSddl))
             {
-                TryApplySddl(new FileInfo(record.OriginalPath), record.RestoreAclSddl);
+                TryApplySddl(new FileInfo(record.QuarantinePath), record.RestoreAclSddl);
             }
+
+            File.Move(record.QuarantinePath, record.OriginalPath);
 
             await _repo.MarkRestoredAsync(recordId, cancellationToken).ConfigureAwait(false);
             _logger.LogInformation("Restored quarantined file to {Path}", record.OriginalPath);
@@ -113,16 +127,38 @@ public sealed class QuarantineStore : IQuarantineStore
 
     private void LockDown(string path)
     {
+        var info = new FileInfo(path);
+
+        // 1) The restrictive DACL is mandatory. The creator/owner still has WRITE_DAC, so this alone is
+        //    not sufficient (see step 2), but a failure here means the file is unprotected -> throw.
+        var dacl = new FileSecurity();
+        // Access-only: the single-arg overload defaults to AccessControlSections.All, which makes
+        // SetAccessControl try to write the SACL (needs SeSecurityPrivilege) and fail.
+        dacl.SetSecurityDescriptorSddlForm(LockedDownDacl, AccessControlSections.Access);
+        info.SetAccessControl(dacl);
+
+        // 2) Take ownership away from the low-privilege creator (who otherwise has implicit
+        //    WRITE_DAC/READ_CONTROL and could simply re-grant themselves access). Setting the owner to
+        //    a different principal needs SeRestorePrivilege, which the service has as LocalSystem;
+        //    best-effort so a non-elevated dev/test run still succeeds with the DACL applied.
         try
         {
-            var security = new FileSecurity();
-            security.SetSecurityDescriptorSddlForm(LockedDownSddl);
-            new FileInfo(path).SetAccessControl(security);
+            var owner = new FileSecurity();
+            owner.SetSecurityDescriptorSddlForm("O:BA", AccessControlSections.Owner);
+            info.SetAccessControl(owner);
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Could not lock down ACL on {Path}; file is quarantined but not ACL-restricted.", path);
+            _logger.LogWarning(ex,
+                "Could not set Administrators as owner of {Path} (requires SYSTEM); DACL applied but the "
+                + "original owner retains WRITE_DAC.", path);
         }
+    }
+
+    private static void TryDelete(string path)
+    {
+        try { File.Delete(path); }
+        catch { /* best effort */ }
     }
 
     private static string? TryCaptureSddl(FileInfo info)
@@ -142,7 +178,7 @@ public sealed class QuarantineStore : IQuarantineStore
         try
         {
             var security = new FileSecurity();
-            security.SetSecurityDescriptorSddlForm(sddl);
+            security.SetSecurityDescriptorSddlForm(sddl, AccessControlSections.Access);
             info.SetAccessControl(security);
         }
         catch (Exception ex)

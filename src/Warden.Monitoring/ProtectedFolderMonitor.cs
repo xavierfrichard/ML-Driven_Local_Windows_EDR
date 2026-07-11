@@ -18,6 +18,8 @@ public sealed class ProtectedFolderMonitor : IProtectedFolderMonitor, IDisposabl
     private readonly IProtectedFolderRepository _repo;
     private readonly ILogger<ProtectedFolderMonitor> _logger;
     private readonly List<FileSystemWatcher> _watchers = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _recentlySeen =
+        new(StringComparer.OrdinalIgnoreCase);
     private bool _started;
     private bool _disposed;
 
@@ -59,10 +61,12 @@ public sealed class ProtectedFolderMonitor : IProtectedFolderMonitor, IDisposabl
                 {
                     IncludeSubdirectories = folder.Recursive,
                     NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite,
-                    EnableRaisingEvents = true,
+                    InternalBufferSize = 64 * 1024, // reduce buffer-overflow risk during file-activity bursts
                 };
                 watcher.Created += OnChanged;
                 watcher.Changed += OnChanged;
+                watcher.Error += OnError;
+                watcher.EnableRaisingEvents = true; // attach handlers first, then start raising
                 _watchers.Add(watcher);
                 _logger.LogInformation("Monitoring protected folder {Path} (recursive={Recursive}).", folder.Path, folder.Recursive);
             }
@@ -92,6 +96,9 @@ public sealed class ProtectedFolderMonitor : IProtectedFolderMonitor, IDisposabl
         _watchers.Clear();
     }
 
+    private void OnError(object sender, ErrorEventArgs e) =>
+        _logger.LogWarning(e.GetException(), "Protected-folder watcher error (some events may have been lost).");
+
     private void OnChanged(object sender, FileSystemEventArgs e)
     {
         try
@@ -99,6 +106,26 @@ public sealed class ProtectedFolderMonitor : IProtectedFolderMonitor, IDisposabl
             if (!ExecutableExtensions.Contains(Path.GetExtension(e.FullPath)))
             {
                 return;
+            }
+
+            // A single create/copy raises Created then one or more Changed events — debounce so the same
+            // file is not logged repeatedly within a short window.
+            var now = DateTime.UtcNow;
+            if (_recentlySeen.TryGetValue(e.FullPath, out DateTime last) && (now - last).TotalSeconds < 2)
+            {
+                _recentlySeen[e.FullPath] = now;
+                return;
+            }
+            _recentlySeen[e.FullPath] = now;
+            if (_recentlySeen.Count > 4096)
+            {
+                foreach (var kv in _recentlySeen)
+                {
+                    if ((now - kv.Value).TotalSeconds > 30)
+                    {
+                        _recentlySeen.TryRemove(kv.Key, out _);
+                    }
+                }
             }
 
             int zone = ReadMotwZone(e.FullPath);

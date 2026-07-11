@@ -203,8 +203,8 @@ public sealed class EnforcementController
 
     private async Task ApplyQuarantineAsync(VerdictContext ctx, string source, CancellationToken ct)
     {
-        await RecordAsync(ctx, PolicyAction.Block, source, ct).ConfigureAwait(false);
-
+        // The launch is already blocked by WDAC; quarantine additionally removes the file. Record the
+        // real outcome (distinct source) rather than downgrading a failure to a plain block.
         QuarantineResult result = await _quarantine
             .QuarantineAsync(ctx.ImagePath, $"Quarantined by {source}", source, ct)
             .ConfigureAwait(false);
@@ -212,10 +212,12 @@ public sealed class EnforcementController
         if (result.Success)
         {
             _logger.LogWarning("Quarantined {File} -> {Dest}", ctx.ImageName, result.QuarantinePath);
+            await RecordAsync(ctx, PolicyAction.Block, $"{source}/Quarantined", ct).ConfigureAwait(false);
         }
         else
         {
             _logger.LogError("Quarantine FAILED for {File}: {Error}", ctx.ImageName, result.Error);
+            await RecordAsync(ctx, PolicyAction.Block, $"{source}/QuarantineFailed", ct).ConfigureAwait(false);
         }
     }
 

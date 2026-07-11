@@ -81,6 +81,20 @@ public sealed class VirusTotalClientTests
         Assert.Equal(Verdict.Allow, result.Verdict);
     }
 
+    [Fact]
+    public async Task Clean_count_excludes_non_scan_outcomes()
+    {
+        // 35 real verdicts (harmless 30 + undetected 5) but 60 timeout/failure that must NOT count.
+        const string json = "{\"data\":{\"attributes\":{\"last_analysis_stats\":"
+            + "{\"malicious\":0,\"harmless\":30,\"undetected\":5,\"timeout\":50,\"failure\":10}}}}";
+        var options = new ReputationOptions { ApiKey = "k", AllowKnownClean = true, CleanMinEngines = 40 };
+        var client = Build(new StubHandler(_ => Ok(json)), new FakeCache(), options);
+
+        var result = await client.EvaluateAsync(TestData.Context(sha256: "ABC"), default);
+
+        Assert.Equal(Verdict.Unknown, result.Verdict); // 35 real engines < 40 -> not auto-allowed
+    }
+
     private static VirusTotalClient Build(StubHandler handler, FakeCache cache, ReputationOptions options) =>
         new(new StubFactory(handler), cache, options, NullLogger<VirusTotalClient>.Instance);
 

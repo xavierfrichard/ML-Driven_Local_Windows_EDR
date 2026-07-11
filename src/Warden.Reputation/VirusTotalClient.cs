@@ -156,14 +156,24 @@ public sealed class VirusTotalClient : IVerdictSource
             {
                 foreach (JsonProperty p in stats.EnumerateObject())
                 {
-                    if (p.Value.ValueKind == JsonValueKind.Number)
+                    if (p.Value.ValueKind != JsonValueKind.Number)
                     {
-                        int value = p.Value.GetInt32();
-                        total += value;
-                        if (p.Name == "malicious")
-                        {
+                        continue;
+                    }
+                    int value = p.Value.GetInt32();
+                    // Count only real engine verdicts toward the total; timeout / confirmed-timeout /
+                    // failure / type-unsupported are not scans and must not inflate the "clean" denominator.
+                    switch (p.Name)
+                    {
+                        case "malicious":
                             malicious = value;
-                        }
+                            total += value;
+                            break;
+                        case "suspicious":
+                        case "harmless":
+                        case "undetected":
+                            total += value;
+                            break;
                     }
                 }
             }

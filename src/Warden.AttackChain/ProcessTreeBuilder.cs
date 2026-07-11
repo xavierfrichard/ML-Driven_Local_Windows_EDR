@@ -31,6 +31,7 @@ public sealed class ProcessTreeBuilder : IProcessTreeBuilder, IDisposable
             SingleReader = true,
         });
     private readonly Task _writerTask;
+    private long _droppedNodes;
     private bool _disposed;
 
     public ProcessTreeBuilder(IAttackChainRepository repo, ChainSuspicionScorer scorer, ILogger<ProcessTreeBuilder> logger)
@@ -60,7 +61,7 @@ public sealed class ProcessTreeBuilder : IProcessTreeBuilder, IDisposable
         AttackChainNode chain = BuildChainFor(start.Pid);
         double suspicion = _scorer.Score(chain);
 
-        _persist.Writer.TryWrite(new AttackChainRecord
+        var record = new AttackChainRecord
         {
             SessionGuid = session,
             NodePid = start.Pid,
@@ -70,7 +71,15 @@ public sealed class ProcessTreeBuilder : IProcessTreeBuilder, IDisposable
             Timestamp = start.Timestamp,
             Depth = chain.Depth,
             SuspicionScore = suspicion,
-        });
+        };
+        if (!_persist.Writer.TryWrite(record))
+        {
+            long dropped = Interlocked.Increment(ref _droppedNodes);
+            if (dropped % 1000 == 1)
+            {
+                _logger.LogWarning("Attack-chain persist queue saturated; dropped {Count} node(s) so far.", dropped);
+            }
+        }
     }
 
     public AttackChainNode BuildChainFor(int pid)
@@ -110,9 +119,31 @@ public sealed class ProcessTreeBuilder : IProcessTreeBuilder, IDisposable
 
     private void Trim()
     {
-        // Drop roughly the oldest quarter to keep memory bounded.
-        var oldest = _byPid.Values.OrderBy(n => n.Timestamp).Take(_byPid.Count / 4).Select(n => n.Pid).ToList();
-        foreach (int pid in oldest)
+        // Evict LEAF nodes (pids that are not anyone's parent) oldest-first, so long-lived roots and
+        // ancestors (explorer.exe, services, session-leader shells) stay pinned — they are exactly the
+        // nodes ancestry reconstruction needs. Only if there are too few leaves do we fall back to
+        // oldest-overall to keep memory bounded.
+        int target = Math.Max(1, _byPid.Count / 4);
+
+        var liveParents = new HashSet<int>();
+        foreach (Node n in _byPid.Values)
+        {
+            liveParents.Add(n.ParentPid);
+        }
+
+        var victims = _byPid.Values
+            .Where(n => !liveParents.Contains(n.Pid))
+            .OrderBy(n => n.Timestamp)
+            .Take(target)
+            .Select(n => n.Pid)
+            .ToList();
+
+        if (victims.Count < target)
+        {
+            victims = _byPid.Values.OrderBy(n => n.Timestamp).Take(target).Select(n => n.Pid).ToList();
+        }
+
+        foreach (int pid in victims)
         {
             _byPid.TryRemove(pid, out _);
             _sessionByPid.TryRemove(pid, out _);

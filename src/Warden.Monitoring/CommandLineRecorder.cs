@@ -8,8 +8,9 @@ namespace Warden.Monitoring;
 
 /// <summary>
 /// Records every observed process launch into the Command Lines panel. Subscribes to the shared ETW
-/// process-start source (started separately by the host) and persists on a background writer so the ETW
-/// thread never blocks. For script-host launches it AMSI-scans the command line and flags detections.
+/// process-start source (started separately by the host). The ETW callback does the bare minimum —
+/// enqueue the raw record — and ALL heavy work (AMSI scanning of script command lines, SQLite writes)
+/// runs on a background writer, so the ETW pump thread is never blocked (which would drop kernel events).
 /// </summary>
 public sealed class CommandLineRecorder : ICommandLineRecorder, IDisposable
 {
@@ -22,13 +23,9 @@ public sealed class CommandLineRecorder : ICommandLineRecorder, IDisposable
     private readonly ICommandLineRepository _repo;
     private readonly IAmsiScanner _amsi;
     private readonly ILogger<CommandLineRecorder> _logger;
-    private readonly Channel<CommandLineRecord> _channel =
-        Channel.CreateBounded<CommandLineRecord>(new BoundedChannelOptions(8192)
-        {
-            FullMode = BoundedChannelFullMode.DropOldest,
-            SingleReader = true,
-        });
+    private readonly object _lifecycle = new();
 
+    private Channel<ProcessStartRecord>? _channel;
     private Task? _writer;
     private bool _started;
     private bool _disposed;
@@ -44,29 +41,72 @@ public sealed class CommandLineRecorder : ICommandLineRecorder, IDisposable
 
     public void Start()
     {
-        if (_started || _disposed)
+        lock (_lifecycle)
         {
-            return;
+            if (_started || _disposed)
+            {
+                return;
+            }
+            _started = true;
+            // Fresh channel each cycle so a prior Stop() (which completes the channel) does not silently
+            // drop every record on restart.
+            _channel = Channel.CreateBounded<ProcessStartRecord>(new BoundedChannelOptions(8192)
+            {
+                FullMode = BoundedChannelFullMode.DropOldest,
+                SingleReader = true,
+            });
+            Channel<ProcessStartRecord> channel = _channel;
+            _writer = Task.Run(() => WriteLoopAsync(channel));
+            _source.ProcessStarted += OnProcessStarted;
         }
-        _started = true;
-        _writer = Task.Run(WriteLoopAsync);
-        _source.ProcessStarted += OnProcessStarted;
     }
 
     public void Stop()
     {
-        if (!_started)
+        Task? writer;
+        lock (_lifecycle)
         {
-            return;
+            if (!_started)
+            {
+                return;
+            }
+            _started = false;
+            _source.ProcessStarted -= OnProcessStarted;
+            _channel?.Writer.TryComplete();
+            writer = _writer;
+            _writer = null;
         }
-        _started = false;
-        _source.ProcessStarted -= OnProcessStarted;
-        _channel.Writer.TryComplete();
-        try { _writer?.Wait(TimeSpan.FromSeconds(3)); }
+        try { writer?.Wait(TimeSpan.FromSeconds(3)); }
         catch { /* best effort */ }
     }
 
-    private void OnProcessStarted(ProcessStartRecord start)
+    // ETW thread: do the minimum — no AMSI, no I/O.
+    private void OnProcessStarted(ProcessStartRecord start) => _channel?.Writer.TryWrite(start);
+
+    private async Task WriteLoopAsync(Channel<ProcessStartRecord> channel)
+    {
+        try
+        {
+            await foreach (ProcessStartRecord start in channel.Reader.ReadAllAsync().ConfigureAwait(false))
+            {
+                try
+                {
+                    await _repo.AddAsync(BuildRecord(start)).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed persisting command line for pid {Pid}.", start.Pid);
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // shutting down
+        }
+    }
+
+    // Runs on the writer thread — safe to do the (potentially slow) synchronous AMSI P/Invoke here.
+    private CommandLineRecord BuildRecord(ProcessStartRecord start)
     {
         string image = string.IsNullOrEmpty(start.ImagePath) ? string.Empty : Path.GetFileName(start.ImagePath);
         bool isScript = ScriptHosts.Contains(image);
@@ -84,7 +124,7 @@ public sealed class CommandLineRecorder : ICommandLineRecorder, IDisposable
             }
         }
 
-        _channel.Writer.TryWrite(new CommandLineRecord
+        return new CommandLineRecord
         {
             Timestamp = start.Timestamp,
             Pid = start.Pid,
@@ -94,29 +134,7 @@ public sealed class CommandLineRecorder : ICommandLineRecorder, IDisposable
             IsScript = isScript,
             Verdict = verdict,
             VerdictSource = verdictSource,
-        });
-    }
-
-    private async Task WriteLoopAsync()
-    {
-        try
-        {
-            await foreach (CommandLineRecord record in _channel.Reader.ReadAllAsync().ConfigureAwait(false))
-            {
-                try
-                {
-                    await _repo.AddAsync(record).ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "Failed persisting command line for pid {Pid}.", record.Pid);
-                }
-            }
-        }
-        catch (OperationCanceledException)
-        {
-            // shutting down
-        }
+        };
     }
 
     public void Dispose()
