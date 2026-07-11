@@ -23,6 +23,7 @@ public partial class App : Application
     private Mutex? _singleInstanceMutex;
     private TaskbarIcon? _trayIcon;
     private PromptPipeClient? _pipeClient;
+    private MainWindow? _mainWindow;
 
     /// <inheritdoc />
     protected override void OnStartup(StartupEventArgs e)
@@ -54,9 +55,9 @@ public partial class App : Application
     {
         var menu = new ContextMenu();
 
-        var showWhitelist = new MenuItem { Header = "Show Whitelist" };
-        showWhitelist.Click += OnShowWhitelist;
-        menu.Items.Add(showWhitelist);
+        var openMain = new MenuItem { Header = "Open Warden" };
+        openMain.Click += OnOpenMain;
+        menu.Items.Add(openMain);
 
         menu.Items.Add(new Separator());
 
@@ -64,12 +65,14 @@ public partial class App : Application
         exit.Click += OnExitClicked;
         menu.Items.Add(exit);
 
-        return new TaskbarIcon
+        var icon = new TaskbarIcon
         {
             ToolTipText = "Warden — zero-trust application control",
             Icon = System.Drawing.SystemIcons.Shield,
             ContextMenu = menu,
         };
+        icon.TrayMouseDoubleClick += OnOpenMain;
+        return icon;
     }
 
     /// <summary>
@@ -95,14 +98,21 @@ public partial class App : Application
         }
     }
 
-    private void OnShowWhitelist(object sender, RoutedEventArgs e)
+    /// <summary>Opens (or re-focuses) the single management window with the 9 panels.</summary>
+    private void OnOpenMain(object sender, RoutedEventArgs e)
     {
-        // Stub for Phase 1: the whitelist management window is not implemented yet.
-        MessageBox.Show(
-            "Whitelist management is not available in this build.",
-            "Warden",
-            MessageBoxButton.OK,
-            MessageBoxImage.Information);
+        if (_mainWindow is null)
+        {
+            _mainWindow = new MainWindow();
+            _mainWindow.Closed += (_, _) => _mainWindow = null;
+        }
+
+        _mainWindow.Show();
+        if (_mainWindow.WindowState == WindowState.Minimized)
+        {
+            _mainWindow.WindowState = WindowState.Normal;
+        }
+        _mainWindow.Activate();
     }
 
     private void OnExitClicked(object sender, RoutedEventArgs e) => Shutdown();

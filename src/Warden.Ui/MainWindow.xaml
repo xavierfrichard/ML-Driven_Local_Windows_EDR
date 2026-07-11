@@ -1,12 +1,176 @@
 <Window x:Class="Warden.Ui.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
-        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-        xmlns:local="clr-namespace:Warden.Ui"
-        mc:Ignorable="d"
-        Title="MainWindow" Height="450" Width="800">
-    <Grid>
+        Title="Warden — Zero-Trust Application Control"
+        Height="740" Width="1200"
+        WindowStartupLocation="CenterScreen">
+    <Window.Resources>
+        <Style TargetType="DataGrid">
+            <Setter Property="AutoGenerateColumns" Value="True" />
+            <Setter Property="IsReadOnly" Value="True" />
+            <Setter Property="CanUserAddRows" Value="False" />
+            <Setter Property="CanUserDeleteRows" Value="False" />
+            <Setter Property="SelectionMode" Value="Single" />
+            <Setter Property="GridLinesVisibility" Value="Horizontal" />
+            <Setter Property="HeadersVisibility" Value="Column" />
+            <Setter Property="ColumnWidth" Value="SizeToHeader" />
+            <Setter Property="FontFamily" Value="Segoe UI" />
+        </Style>
+    </Window.Resources>
 
-    </Grid>
+    <DockPanel>
+        <StatusBar DockPanel.Dock="Bottom">
+            <StatusBarItem>
+                <TextBlock x:Name="StatusText" Text="Ready." />
+            </StatusBarItem>
+            <StatusBarItem HorizontalAlignment="Right">
+                <TextBlock x:Name="DbPathText" Foreground="Gray" />
+            </StatusBarItem>
+        </StatusBar>
+
+        <TabControl x:Name="Tabs">
+
+            <!-- 5. Whitelist (all columns) -->
+            <TabItem Header="Whitelist">
+                <DockPanel>
+                    <ToolBar DockPanel.Dock="Top">
+                        <Button Content="Refresh" Click="RefreshWhitelist_Click" />
+                        <Separator />
+                        <Button Content="Manual Add…" Click="AddWhitelist_Click" />
+                    </ToolBar>
+                    <DataGrid x:Name="WhitelistGrid" AutoGenerateColumns="False">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Time" Binding="{Binding Timestamp}" />
+                            <DataGridTextColumn Header="Action" Binding="{Binding Action}" />
+                            <DataGridTextColumn Header="Process" Binding="{Binding ProcessName}" />
+                            <DataGridTextColumn Header="Path" Binding="{Binding ProcessPath}" Width="220" />
+                            <DataGridTextColumn Header="LLM verdict" Binding="{Binding LlmVerdict}" />
+                            <DataGridTextColumn Header="ML score" Binding="{Binding MlScore}" />
+                            <DataGridTextColumn Header="Signer" Binding="{Binding SignerSubject}" Width="180" />
+                            <DataGridTextColumn Header="SHA-256" Binding="{Binding Sha256}" Width="200" />
+                            <DataGridTextColumn Header="Command line" Binding="{Binding CommandLine}" Width="220" />
+                            <DataGridTextColumn Header="Size" Binding="{Binding FileSize}" />
+                            <DataGridTextColumn Header="Parent" Binding="{Binding ParentName}" />
+                            <DataGridTextColumn Header="Source" Binding="{Binding Source}" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </DockPanel>
+            </TabItem>
+
+            <!-- 6. User Log (everything the user allowed at a prompt) -->
+            <TabItem Header="User Log">
+                <DockPanel>
+                    <ToolBar DockPanel.Dock="Top">
+                        <Button Content="Refresh" Click="RefreshUserLog_Click" />
+                    </ToolBar>
+                    <DataGrid x:Name="UserLogGrid" />
+                </DockPanel>
+            </TabItem>
+
+            <!-- 9. Rules -->
+            <TabItem Header="Rules">
+                <DockPanel>
+                    <ToolBar DockPanel.Dock="Top">
+                        <Button Content="Refresh" Click="RefreshRules_Click" />
+                        <Separator />
+                        <Button Content="Add…" Click="AddRule_Click" />
+                        <Button Content="Delete selected" Click="DeleteRule_Click" />
+                    </ToolBar>
+                    <DataGrid x:Name="RulesGrid" />
+                </DockPanel>
+            </TabItem>
+
+            <!-- 7. Command Lines -->
+            <TabItem Header="Command Lines">
+                <DockPanel>
+                    <ToolBar DockPanel.Dock="Top">
+                        <Button Content="Refresh" Click="RefreshCommandLines_Click" />
+                    </ToolBar>
+                    <DataGrid x:Name="CommandLinesGrid" />
+                </DockPanel>
+            </TabItem>
+
+            <!-- 8. Quarantine -->
+            <TabItem Header="Quarantine">
+                <DockPanel>
+                    <ToolBar DockPanel.Dock="Top">
+                        <Button Content="Refresh" Click="RefreshQuarantine_Click" />
+                    </ToolBar>
+                    <DataGrid x:Name="QuarantineGrid" />
+                </DockPanel>
+            </TabItem>
+
+            <!-- 3. Attack Chains -->
+            <TabItem Header="Attack Chains">
+                <DockPanel>
+                    <ToolBar DockPanel.Dock="Top">
+                        <Button Content="Refresh" Click="RefreshChains_Click" />
+                    </ToolBar>
+                    <DataGrid x:Name="ChainsGrid" />
+                </DockPanel>
+            </TabItem>
+
+            <!-- 4. Protected Folders -->
+            <TabItem Header="Protected Folders">
+                <DockPanel>
+                    <ToolBar DockPanel.Dock="Top">
+                        <Button Content="Refresh" Click="RefreshFolders_Click" />
+                        <Separator />
+                        <Button Content="Add folder…" Click="AddFolder_Click" />
+                        <Button Content="Delete selected" Click="DeleteFolder_Click" />
+                    </ToolBar>
+                    <DataGrid x:Name="FoldersGrid" />
+                </DockPanel>
+            </TabItem>
+
+            <!-- 1. Advanced (vulnerable apps / mitigation profiles / firewall) -->
+            <TabItem Header="Advanced">
+                <DockPanel>
+                    <ToolBar DockPanel.Dock="Top">
+                        <Button Content="Refresh" Click="RefreshAdvanced_Click" />
+                        <Separator />
+                        <TextBlock VerticalAlignment="Center" Foreground="Gray"
+                                   Text="Read-only: applying mitigations/firewall rules is service/installer-driven (VM, audit-first)." />
+                    </ToolBar>
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="*" />
+                            <RowDefinition Height="*" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+                        <GroupBox Grid.Row="0" Header="Vulnerable apps (EP-reset ∪ LOLBAS)">
+                            <DataGrid x:Name="VulnAppsGrid" />
+                        </GroupBox>
+                        <GroupBox Grid.Row="1" Header="Mitigation profiles">
+                            <DataGrid x:Name="MitigationGrid" />
+                        </GroupBox>
+                        <GroupBox Grid.Row="2" Header="Firewall rules">
+                            <DataGrid x:Name="FirewallGrid" />
+                        </GroupBox>
+                    </Grid>
+                </DockPanel>
+            </TabItem>
+
+            <!-- 2. Web Apps (always-ON) -->
+            <TabItem Header="Web Apps">
+                <DockPanel>
+                    <ToolBar DockPanel.Dock="Top">
+                        <Button Content="Refresh" Click="RefreshWebApps_Click" />
+                    </ToolBar>
+                    <DataGrid x:Name="WebAppsGrid" />
+                </DockPanel>
+            </TabItem>
+
+            <!-- Bonus: Tamper Log (self-protection audit trail) -->
+            <TabItem Header="Tamper Log">
+                <DockPanel>
+                    <ToolBar DockPanel.Dock="Top">
+                        <Button Content="Refresh" Click="RefreshTamper_Click" />
+                    </ToolBar>
+                    <DataGrid x:Name="TamperGrid" />
+                </DockPanel>
+            </TabItem>
+
+        </TabControl>
+    </DockPanel>
 </Window>
