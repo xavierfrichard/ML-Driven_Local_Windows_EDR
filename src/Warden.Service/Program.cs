@@ -13,9 +13,12 @@ using Warden.Quarantine;
 using Warden.Reputation;
 using Warden.Rules;
 using Warden.Service;
+using Warden.AntiExploit;
+using Warden.Firewall;
 using Warden.Storage;
 using Warden.Trust;
 using Warden.Wdac;
+using Warden.WebApps;
 
 var builder = Host.CreateApplicationBuilder(args);
 
@@ -45,6 +48,13 @@ builder.Services.AddWardenLlm(options =>
 {
     options.AnthropicApiKey = Environment.GetEnvironmentVariable("WARDEN_ANTHROPIC_API_KEY");
 });
+
+// Phase 5 — Advanced + Web Apps panels. The Web Apps classifier is always-ON (no toggle) and read-only.
+// The anti-exploit and firewall managers are registered but apply NOTHING on startup: their appliers
+// make real, machine-wide changes only when invoked panel-driven (audit-first, VM-validated).
+builder.Services.AddWardenWebApps();
+builder.Services.AddWardenAntiExploit();
+builder.Services.AddWardenFirewall();
 
 // The decision pipeline is composed from every registered IVerdictSource, ordered cheap->expensive by
 // VerdictSourceKind (Rules -> TrustGate -> Whitelist -> ...). A source that throws is logged and skipped;

@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Warden.AntiExploit;
 using Warden.AttackChain;
 using Warden.Etw;
 using Warden.Monitoring;
@@ -20,6 +21,7 @@ public sealed class WardenWorker : BackgroundService
     private readonly IProcessTreeBuilder _tree;
     private readonly ICommandLineRecorder _commandLines;
     private readonly IProtectedFolderMonitor _folders;
+    private readonly IVulnerableAppRepository _vulnerableApps;
     private readonly ILogger<WardenWorker> _logger;
 
     public WardenWorker(
@@ -30,6 +32,7 @@ public sealed class WardenWorker : BackgroundService
         IProcessTreeBuilder tree,
         ICommandLineRecorder commandLines,
         IProtectedFolderMonitor folders,
+        IVulnerableAppRepository vulnerableApps,
         ILogger<WardenWorker> logger)
     {
         _database = database;
@@ -39,6 +42,7 @@ public sealed class WardenWorker : BackgroundService
         _tree = tree;
         _commandLines = commandLines;
         _folders = folders;
+        _vulnerableApps = vulnerableApps;
         _logger = logger;
     }
 
@@ -46,6 +50,8 @@ public sealed class WardenWorker : BackgroundService
     {
         _database.Initialize();
         _logger.LogInformation("Warden database ready at {Path}", _database.DatabasePath);
+
+        await SeedVulnerableAppsAsync(stoppingToken).ConfigureAwait(false);
 
         _processStarts.ProcessStarted += _controller.RecordProcessStart;
         _processStarts.ProcessStarted += _tree.RecordStart;
@@ -77,6 +83,37 @@ public sealed class WardenWorker : BackgroundService
             _blocks.BlockObserved -= _controller.EnqueueBlock;
             SafeStop(_processStarts.Stop, nameof(IProcessStartSource));
             SafeStop(_blocks.Stop, nameof(ICodeIntegrityBlockSource));
+        }
+    }
+
+    /// <summary>
+    /// Populate the Advanced panel's vulnerable-app list from the built-in seed (EP-reset ∪ LOLBAS) if it
+    /// is empty. This only writes data rows — it applies no mitigation and changes nothing on the system.
+    /// </summary>
+    private async Task SeedVulnerableAppsAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (await _vulnerableApps.CountAsync(cancellationToken).ConfigureAwait(false) > 0)
+            {
+                return; // already seeded / user-curated
+            }
+
+            foreach (VulnerableApp app in VulnerableAppSeeder.Seed())
+            {
+                await _vulnerableApps.AddOrIgnoreAsync(new VulnerableAppRecord
+                {
+                    AppPath = app.FileName,
+                    Reason = VulnerableAppSeeder.ReasonToString(app.Reason),
+                    Publisher = null,
+                }, cancellationToken).ConfigureAwait(false);
+            }
+
+            _logger.LogInformation("Seeded the vulnerable-app list (EP-reset ∪ LOLBAS).");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Vulnerable-app seeding failed (non-fatal).");
         }
     }
 

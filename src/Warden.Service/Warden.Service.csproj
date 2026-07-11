@@ -27,5 +27,8 @@
     <ProjectReference Include="..\Warden.Monitoring\Warden.Monitoring.csproj" />
     <ProjectReference Include="..\Warden.Ml\Warden.Ml.csproj" />
     <ProjectReference Include="..\Warden.Llm\Warden.Llm.csproj" />
+    <ProjectReference Include="..\Warden.WebApps\Warden.WebApps.csproj" />
+    <ProjectReference Include="..\Warden.AntiExploit\Warden.AntiExploit.csproj" />
+    <ProjectReference Include="..\Warden.Firewall\Warden.Firewall.csproj" />
   </ItemGroup>
 </Project>

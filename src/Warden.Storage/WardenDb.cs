@@ -162,5 +162,48 @@ public sealed class WardenDb : IWardenDatabase
             CachedTs    TEXT    NOT NULL,
             TtlSecs     INTEGER NOT NULL DEFAULT 86400
         );
+
+        CREATE TABLE IF NOT EXISTS vulnerable_apps (
+            Id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            AppPath             TEXT    NOT NULL,
+            Publisher           TEXT,
+            Reason              TEXT    NOT NULL,
+            MitigationProfileId INTEGER,
+            FwInBlocked         INTEGER NOT NULL DEFAULT 0,
+            FwOutBlocked        INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS UX_vulnerable_apps_path ON vulnerable_apps(AppPath);
+
+        CREATE TABLE IF NOT EXISTS mitigation_profiles (
+            Id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            AppPath          TEXT    NOT NULL,
+            XmlPath          TEXT,
+            AsrGuidsCsv      TEXT,
+            NoChildProcesses INTEGER NOT NULL DEFAULT 0,
+            CetUsermode      INTEGER NOT NULL DEFAULT 0,
+            AppliedTs        TEXT    NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS UX_mitigation_profiles_path ON mitigation_profiles(AppPath);
+
+        CREATE TABLE IF NOT EXISTS firewall_rules (
+            Id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            AppPath    TEXT    NOT NULL,
+            Direction  TEXT    NOT NULL,
+            FwRuleName TEXT    NOT NULL,
+            Enabled    INTEGER NOT NULL DEFAULT 1,
+            CreatedTs  TEXT    NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS IX_firewall_rules_app ON firewall_rules(AppPath);
+
+        CREATE TABLE IF NOT EXISTS webapp_classifications (
+            Id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            AppPath          TEXT    NOT NULL,
+            Engine           TEXT    NOT NULL,
+            StaticScore      INTEGER NOT NULL DEFAULT 0,
+            RuntimeConfirmed INTEGER NOT NULL DEFAULT 0,
+            SignalsJson      TEXT,
+            Ts               TEXT    NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS UX_webapp_classifications_path ON webapp_classifications(AppPath);
         """;
 }

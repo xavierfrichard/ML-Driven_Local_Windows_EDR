@@ -19,6 +19,10 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IQuarantineRepository, QuarantineRepository>();
         services.AddSingleton<IProtectedFolderRepository, ProtectedFolderRepository>();
         services.AddSingleton<IReputationCacheRepository, ReputationCacheRepository>();
+        services.AddSingleton<IVulnerableAppRepository, VulnerableAppRepository>();
+        services.AddSingleton<IMitigationProfileRepository, MitigationProfileRepository>();
+        services.AddSingleton<IFirewallRuleRepository, FirewallRuleRepository>();
+        services.AddSingleton<IWebAppClassificationRepository, WebAppClassificationRepository>();
         return services;
     }
 }

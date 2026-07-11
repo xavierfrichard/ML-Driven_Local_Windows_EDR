@@ -8,6 +8,7 @@ using Warden.Quarantine;
 using Warden.Storage;
 using Warden.Trust;
 using Warden.Wdac;
+using Warden.WebApps;
 
 namespace Warden.Service;
 
@@ -36,6 +37,7 @@ public sealed class EnforcementController
     private readonly IWhitelistRepository _whitelist;
     private readonly IProcessTreeBuilder _tree;
     private readonly IQuarantineStore _quarantine;
+    private readonly WebAppClassifier? _webApps;
     private readonly ILogger<EnforcementController> _logger;
 
     private readonly Channel<CiBlockEvent> _blocks =
@@ -53,7 +55,8 @@ public sealed class EnforcementController
         IWhitelistRepository whitelist,
         IProcessTreeBuilder tree,
         IQuarantineStore quarantine,
-        ILogger<EnforcementController> logger)
+        ILogger<EnforcementController> logger,
+        WebAppClassifier? webApps = null)
     {
         _pipeline = pipeline;
         _inspector = inspector;
@@ -62,6 +65,7 @@ public sealed class EnforcementController
         _whitelist = whitelist;
         _tree = tree;
         _quarantine = quarantine;
+        _webApps = webApps;
         _logger = logger;
     }
 
@@ -137,6 +141,30 @@ public sealed class EnforcementController
             default:
                 await PromptAsync(ctx, result, block, ct).ConfigureAwait(false);
                 break;
+        }
+
+        // Always-ON Web Apps classification of the blocked image (read-only; feeds the Web Apps panel).
+        // Best-effort — it must never affect the enforcement outcome.
+        await ClassifyWebAppBestEffortAsync(ctx.ImagePath, ct).ConfigureAwait(false);
+    }
+
+    private async Task ClassifyWebAppBestEffortAsync(string appPath, CancellationToken ct)
+    {
+        if (_webApps is null || string.IsNullOrEmpty(appPath))
+        {
+            return;
+        }
+        try
+        {
+            await _webApps.ClassifyAsync(appPath, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Web-app classification failed for {File}", Path.GetFileName(appPath));
         }
     }
 
