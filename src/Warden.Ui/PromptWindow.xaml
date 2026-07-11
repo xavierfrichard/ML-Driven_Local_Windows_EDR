@@ -1,0 +1,161 @@
+<Window x:Class="Warden.Ui.PromptWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Warden — Blocked Launch"
+        SizeToContent="Height"
+        Width="440"
+        WindowStyle="None"
+        ResizeMode="NoResize"
+        ShowInTaskbar="False"
+        ShowActivated="False"
+        Topmost="True"
+        AllowsTransparency="True"
+        Background="Transparent">
+
+    <Window.Resources>
+        <SolidColorBrush x:Key="CardBrush" Color="#FF1E1E24" />
+        <SolidColorBrush x:Key="AccentBrush" Color="#FFE53935" />
+        <SolidColorBrush x:Key="LabelBrush" Color="#FF9AA0AA" />
+        <SolidColorBrush x:Key="ValueBrush" Color="#FFECEDEF" />
+        <SolidColorBrush x:Key="MutedBrush" Color="#FF6D7480" />
+
+        <Style x:Key="LabelText" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource LabelBrush}" />
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="Margin" Value="0,6,0,1" />
+        </Style>
+
+        <Style x:Key="ValueText" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource ValueBrush}" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+            <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+        </Style>
+
+        <Style x:Key="ActionButton" TargetType="Button">
+            <Setter Property="Height" Value="34" />
+            <Setter Property="MinWidth" Value="96" />
+            <Setter Property="Foreground" Value="{StaticResource ValueBrush}" />
+            <Setter Property="Background" Value="#FF2C2C34" />
+            <Setter Property="BorderBrush" Value="#FF3A3A44" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd"
+                                CornerRadius="5"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#FF3A3A44" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <Border CornerRadius="8" Background="{StaticResource CardBrush}"
+            BorderBrush="#FF32323C" BorderThickness="1" Margin="8">
+        <Border.Effect>
+            <DropShadowEffect BlurRadius="16" ShadowDepth="2" Opacity="0.55" Color="#FF000000" />
+        </Border.Effect>
+
+        <Grid Margin="16,14,16,14">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <!-- Header -->
+            <Grid Grid.Row="0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="4" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <Border Grid.Column="0" Background="{StaticResource AccentBrush}" CornerRadius="2" />
+                <StackPanel Grid.Column="1" Margin="10,0,0,0">
+                    <TextBlock Text="Warden blocked a launch"
+                               Foreground="{StaticResource ValueBrush}"
+                               FontSize="14" FontWeight="SemiBold" />
+                    <TextBlock x:Name="ModeText"
+                               Foreground="{StaticResource MutedBrush}" FontSize="11" />
+                </StackPanel>
+                <Border Grid.Column="2" VerticalAlignment="Top"
+                        Background="#FF2C2C34" CornerRadius="10" Padding="8,3">
+                    <TextBlock x:Name="CountdownText"
+                               Foreground="{StaticResource LabelBrush}" FontSize="11" />
+                </Border>
+            </Grid>
+
+            <!-- File identity -->
+            <StackPanel Grid.Row="1" Margin="0,12,0,0">
+                <TextBlock Text="FILE" Style="{StaticResource LabelText}" />
+                <TextBlock x:Name="FileNameText" Style="{StaticResource ValueText}" FontWeight="SemiBold" />
+
+                <TextBlock Text="PATH" Style="{StaticResource LabelText}" />
+                <TextBlock x:Name="PathText" Style="{StaticResource ValueText}" />
+
+                <TextBlock Text="SHA-256" Style="{StaticResource LabelText}" />
+                <TextBlock x:Name="ShaText" Style="{StaticResource ValueText}"
+                           FontFamily="Consolas" FontSize="11" />
+
+                <TextBlock Text="COMMAND LINE" Style="{StaticResource LabelText}" />
+                <TextBlock x:Name="CommandLineText" Style="{StaticResource ValueText}"
+                           FontFamily="Consolas" FontSize="11" MaxHeight="48" />
+
+                <TextBlock Text="PARENT" Style="{StaticResource LabelText}" />
+                <TextBlock x:Name="ParentText" Style="{StaticResource ValueText}" />
+
+                <TextBlock Text="SIGNER" Style="{StaticResource LabelText}" />
+                <TextBlock x:Name="SignerText" Style="{StaticResource ValueText}" />
+
+                <TextBlock Text="MARK OF THE WEB" Style="{StaticResource LabelText}" />
+                <TextBlock x:Name="MotwText" Style="{StaticResource ValueText}" />
+
+                <TextBlock Text="REASON" Style="{StaticResource LabelText}" />
+                <TextBlock x:Name="ReasonText" Style="{StaticResource ValueText}" />
+            </StackPanel>
+
+            <!-- Assessment (ML / LLM) -->
+            <StackPanel Grid.Row="2" x:Name="AssessmentPanel" Margin="0,10,0,0">
+                <Border Height="1" Background="#FF2A2A32" />
+                <TextBlock x:Name="MlText" Style="{StaticResource ValueText}" Margin="0,8,0,0" />
+                <TextBlock x:Name="LlmText" Style="{StaticResource ValueText}" Margin="0,4,0,0"
+                           TextWrapping="Wrap" MaxHeight="72" />
+            </StackPanel>
+
+            <!-- Actions -->
+            <Grid Grid.Row="3" Margin="0,16,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="8" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="8" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
+                <Button Grid.Column="0" x:Name="KeepBlockedButton"
+                        Content="Keep Blocked" Style="{StaticResource ActionButton}"
+                        Click="OnKeepBlocked" />
+                <Button Grid.Column="2" x:Name="QuarantineButton"
+                        Content="Quarantine" Style="{StaticResource ActionButton}"
+                        Click="OnQuarantine" />
+                <Button Grid.Column="4" x:Name="AllowButton"
+                        Content="Allow" Style="{StaticResource ActionButton}"
+                        Background="{StaticResource AccentBrush}" BorderBrush="{StaticResource AccentBrush}"
+                        Click="OnAllow" />
+            </Grid>
+        </Grid>
+    </Border>
+</Window>

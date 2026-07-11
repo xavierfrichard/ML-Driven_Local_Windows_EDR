@@ -10,6 +10,10 @@
     <Deterministic>true</Deterministic>
     <Company>Warden</Company>
     <Product>Warden Zero-Trust Agent</Product>
+    <!-- Pervasive style/perf analyzer noise that does not indicate bugs in this codebase:
+         CA1848 (LoggerMessage delegates — not perf-critical here), CA1305 (IFormatProvider on
+         internal-only display strings). Correctness rules stay enabled. -->
+    <NoWarn>$(NoWarn);CA1848;CA1305</NoWarn>
   </PropertyGroup>
 
 </Project>

@@ -7,15 +7,18 @@ namespace Warden.Tests;
 internal static class TestData
 {
     /// <summary>A minimal, valid <see cref="VerdictContext"/> for pipeline tests.</summary>
-    public static VerdictContext Context(string imagePath = @"C:\Temp\unknown.exe") => new(
-        Sha256: "0000000000000000000000000000000000000000000000000000000000000000",
+    public static VerdictContext Context(
+        string imagePath = @"C:\Temp\unknown.exe",
+        string sha256 = "0000000000000000000000000000000000000000000000000000000000000000",
+        SignerInfo? signer = null) => new(
+        Sha256: sha256,
         ImagePath: imagePath,
         CommandLine: $"\"{imagePath}\"",
         Pid: 4321,
         ParentPid: 1234,
         ParentPath: @"C:\Windows\explorer.exe",
         ParentSha256: null,
-        Signer: SignerInfo.Unsigned,
+        Signer: signer ?? SignerInfo.Unsigned,
         MotwZone: VerdictContext.NoMotw,
         Pe: new Lazy<PeFeatures>(() => PeFeatures.NotPortableExecutable),
         Chain: AttackChainNode.None,

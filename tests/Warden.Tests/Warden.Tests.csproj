@@ -25,6 +25,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Warden.Core\Warden.Core.csproj" />
+    <ProjectReference Include="..\..\src\Warden.Storage\Warden.Storage.csproj" />
+    <ProjectReference Include="..\..\src\Warden.Rules\Warden.Rules.csproj" />
   </ItemGroup>
 
 </Project>
