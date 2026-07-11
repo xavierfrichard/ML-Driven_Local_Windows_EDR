@@ -15,6 +15,7 @@ using Warden.Rules;
 using Warden.Service;
 using Warden.AntiExploit;
 using Warden.Firewall;
+using Warden.Hardening;
 using Warden.Storage;
 using Warden.Trust;
 using Warden.Wdac;
@@ -24,6 +25,16 @@ var builder = Host.CreateApplicationBuilder(args);
 
 // Run as a Windows Service in production; also runs as a console app for dev.
 builder.Services.AddWindowsService(options => options.ServiceName = "WardenAgent");
+
+// Phase 6 — structured rolling-file logging (Serilog) and the self-protection layer. The data-directory
+// ACL lockdown is applied on startup ONLY when the installer sets WARDEN_ENFORCE_HARDENING=1, so a plain
+// dev/console run never re-ACLs %ProgramData%\Warden. The service SDDL + recovery are installer-only.
+builder.Services.AddWardenLogging();
+builder.Services.AddWardenHardening(options =>
+{
+    options.EnforceOnStartup =
+        string.Equals(Environment.GetEnvironmentVariable("WARDEN_ENFORCE_HARDENING"), "1", StringComparison.Ordinal);
+});
 
 // Module registrations (each module owns its own DI wiring).
 builder.Services.AddWardenStorage();

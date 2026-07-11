@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using Warden.AntiExploit;
 using Warden.AttackChain;
 using Warden.Etw;
+using Warden.Hardening;
 using Warden.Monitoring;
 using Warden.Storage;
 
@@ -22,6 +23,9 @@ public sealed class WardenWorker : BackgroundService
     private readonly ICommandLineRecorder _commandLines;
     private readonly IProtectedFolderMonitor _folders;
     private readonly IVulnerableAppRepository _vulnerableApps;
+    private readonly HardeningOptions _hardening;
+    private readonly DataDirectoryHardener _dirHardener;
+    private readonly ITamperLog _tamperLog;
     private readonly ILogger<WardenWorker> _logger;
 
     public WardenWorker(
@@ -33,6 +37,9 @@ public sealed class WardenWorker : BackgroundService
         ICommandLineRecorder commandLines,
         IProtectedFolderMonitor folders,
         IVulnerableAppRepository vulnerableApps,
+        HardeningOptions hardening,
+        DataDirectoryHardener dirHardener,
+        ITamperLog tamperLog,
         ILogger<WardenWorker> logger)
     {
         _database = database;
@@ -43,6 +50,9 @@ public sealed class WardenWorker : BackgroundService
         _commandLines = commandLines;
         _folders = folders;
         _vulnerableApps = vulnerableApps;
+        _hardening = hardening;
+        _dirHardener = dirHardener;
+        _tamperLog = tamperLog;
         _logger = logger;
     }
 
@@ -51,6 +61,7 @@ public sealed class WardenWorker : BackgroundService
         _database.Initialize();
         _logger.LogInformation("Warden database ready at {Path}", _database.DatabasePath);
 
+        await ApplyStartupHardeningAsync(stoppingToken).ConfigureAwait(false);
         await SeedVulnerableAppsAsync(stoppingToken).ConfigureAwait(false);
 
         _processStarts.ProcessStarted += _controller.RecordProcessStart;
@@ -83,6 +94,40 @@ public sealed class WardenWorker : BackgroundService
             _blocks.BlockObserved -= _controller.EnqueueBlock;
             SafeStop(_processStarts.Stop, nameof(IProcessStartSource));
             SafeStop(_blocks.Stop, nameof(ICodeIntegrityBlockSource));
+        }
+    }
+
+    /// <summary>
+    /// Lock the data directory + database to SYSTEM + Administrators (self-protection), but only when the
+    /// installer has enabled it (<c>WARDEN_ENFORCE_HARDENING=1</c>). A plain dev/console run does nothing.
+    /// Best-effort: an ACL failure is recorded as a tamper event and the service keeps running.
+    /// </summary>
+    private async Task ApplyStartupHardeningAsync(CancellationToken cancellationToken)
+    {
+        if (!_hardening.EnforceOnStartup)
+        {
+            return;
+        }
+
+        try
+        {
+            bool dirOk = _dirHardener.HardenDirectory(_hardening.DataDirectory);
+            bool dbOk = _dirHardener.HardenFile(_database.DatabasePath);
+
+            if (dirOk && dbOk)
+            {
+                _logger.LogInformation("Self-protection ACLs applied to {Dir}.", _hardening.DataDirectory);
+            }
+            else
+            {
+                await _tamperLog.LogAsync("data-dir-lockdown-incomplete",
+                    $"dir={dirOk}, db={dbOk} for {_hardening.DataDirectory}", "critical", cancellationToken)
+                    .ConfigureAwait(false);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Startup hardening failed (non-fatal).");
         }
     }
 

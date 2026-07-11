@@ -23,6 +23,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IMitigationProfileRepository, MitigationProfileRepository>();
         services.AddSingleton<IFirewallRuleRepository, FirewallRuleRepository>();
         services.AddSingleton<IWebAppClassificationRepository, WebAppClassificationRepository>();
+        services.AddSingleton<ITamperLogRepository, TamperLogRepository>();
         return services;
     }
 }

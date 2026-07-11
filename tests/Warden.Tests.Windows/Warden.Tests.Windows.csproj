@@ -30,6 +30,7 @@
     <ProjectReference Include="..\..\src\Warden.WebApps\Warden.WebApps.csproj" />
     <ProjectReference Include="..\..\src\Warden.AntiExploit\Warden.AntiExploit.csproj" />
     <ProjectReference Include="..\..\src\Warden.Firewall\Warden.Firewall.csproj" />
+    <ProjectReference Include="..\..\src\Warden.Hardening\Warden.Hardening.csproj" />
   </ItemGroup>
 
 </Project>

@@ -205,5 +205,13 @@ public sealed class WardenDb : IWardenDatabase
             Ts               TEXT    NOT NULL
         );
         CREATE UNIQUE INDEX IF NOT EXISTS UX_webapp_classifications_path ON webapp_classifications(AppPath);
+
+        CREATE TABLE IF NOT EXISTS tamper_log (
+            Id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            Timestamp TEXT    NOT NULL,
+            Category  TEXT    NOT NULL,
+            Detail    TEXT,
+            Severity  TEXT    NOT NULL DEFAULT 'warning'
+        );
         """;
 }
