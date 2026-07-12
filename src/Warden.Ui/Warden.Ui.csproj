@@ -7,6 +7,12 @@
 
   <ItemGroup>
     <PackageReference Include="Hardcodet.NotifyIcon.Wpf" Version="2.0.1" />
+    <!-- The management window opens the SQLite database directly (via Warden.Storage's repos), so the UI
+         depends on these at runtime. Referencing them directly (not just transitively through
+         Warden.Storage) guarantees they land in the UI output even on an incremental build — a stale
+         incremental build once shipped a UI without Dapper/Sqlite, crashing when a panel opened. -->
+    <PackageReference Include="Dapper" Version="2.1.35" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.10" />
   </ItemGroup>
 
   <PropertyGroup>
