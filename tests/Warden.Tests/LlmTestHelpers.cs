@@ -2,6 +2,7 @@ using System.Collections.Immutable;
 using System.Text.Json;
 using Warden.Core;
 using Warden.Llm;
+using Warden.Llm.Providers;
 
 namespace Warden.Tests;
 
@@ -113,6 +114,38 @@ internal static class LlmTest
         return JsonSerializer.Serialize(body);
     }
 
+    /// <summary>A claude CLI <c>--output-format json</c> success envelope whose <c>result</c> field holds
+    /// the verdict JSON (optionally inside markdown fences, as the real CLI emits).</summary>
+    public static string CliEnvelope(string verdict, double confidence, string action = "block", bool fenced = true)
+    {
+        string inner = JsonSerializer.Serialize(new
+        {
+            verdict,
+            confidence,
+            evidence = Array.Empty<string>(),
+            mitre_attack = Array.Empty<string>(),
+            suggested_action = action,
+        });
+        string result = fenced ? "```json\n" + inner + "\n```" : inner;
+        var body = new
+        {
+            is_error = false,
+            subtype = "success",
+            type = "result",
+            result,
+            session_id = "sess_1",
+            total_cost_usd = 0.03,
+        };
+        return JsonSerializer.Serialize(body);
+    }
+
+    /// <summary>A CLI envelope that reports an execution error (no usable verdict).</summary>
+    public static string CliErrorEnvelope()
+    {
+        var body = new { is_error = true, subtype = "error_during_execution", type = "result", result = "" };
+        return JsonSerializer.Serialize(body);
+    }
+
     public static string OpenAiContentJson(string verdict, double confidence)
     {
         string inner = JsonSerializer.Serialize(new
@@ -189,6 +222,32 @@ internal sealed class StubHttpClientFactory : IHttpClientFactory
     }
 
     public HttpClient CreateClient(string name) => new(_handler, disposeHandler: false) { BaseAddress = _baseAddress };
+}
+
+/// <summary>A fake <see cref="IClaudeCliRunner"/> that records its invocation and returns a canned result.</summary>
+internal sealed class FakeClaudeCliRunner : IClaudeCliRunner
+{
+    private readonly ClaudeCliResult _result;
+
+    public FakeClaudeCliRunner(ClaudeCliResult result) => _result = result;
+
+    public int Calls { get; private set; }
+    public string? LastExecutable { get; private set; }
+    public IReadOnlyList<string> LastArgs { get; private set; } = Array.Empty<string>();
+    public string LastStdin { get; private set; } = string.Empty;
+
+    public Task<ClaudeCliResult> RunAsync(
+        string executablePath, IReadOnlyList<string> arguments, string stdin, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        Calls++;
+        LastExecutable = executablePath;
+        LastArgs = arguments;
+        LastStdin = stdin;
+        return Task.FromResult(_result);
+    }
+
+    /// <summary>A runner whose process started and exited 0 with the given stdout envelope.</summary>
+    public static FakeClaudeCliRunner Ok(string stdout) => new(new ClaudeCliResult(true, 0, stdout, string.Empty));
 }
 
 /// <summary>A configurable fake LLM provider for verdict-source tests.</summary>

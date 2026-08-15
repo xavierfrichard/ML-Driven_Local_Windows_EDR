@@ -17,8 +17,13 @@ public static class LlmAnalystPrompt
     /// <summary>Name of the single tool the model is forced to call.</summary>
     public const string ToolName = "submit_verdict";
 
-    /// <summary>The fixed system prompt. Stable across requests so it can be prompt-cached.</summary>
-    public const string SystemPrompt =
+    /// <summary>
+    /// The shared analysis body: role, dossier description, prompt-injection defense, and the
+    /// risk-weighting guidance. The output-format instruction is appended per transport (a forced tool
+    /// call for the Messages/OpenAI wire, a raw-JSON emission for the CLI), so the analysis text and its
+    /// injection defense are defined exactly once.
+    /// </summary>
+    private const string AnalysisBody =
         "You are a senior Windows malware and threat analyst embedded in an endpoint detection & response (EDR) agent. " +
         "The agent runs a zero-trust application-control policy and has ALREADY BLOCKED a program from launching. " +
         "Your job is to judge whether that program should stay blocked, be allowed, or be escalated to the user.\n\n" +
@@ -36,10 +41,25 @@ public static class LlmAnalystPrompt
         "credential access, cryptography/ransomware, persistence, or anti-analysis; a suspicious parent (an office app, " +
         "browser, PDF reader, or script host spawning an executable); deceptive or mismatched names. Lower risk: a valid " +
         "Microsoft signature from a system path; a well-known benign publisher; no suspicious imports; ordinary parentage. " +
-        "Remember that absence of evidence is weak evidence — a clean-looking unknown is not automatically benign.\n\n" +
+        "Remember that absence of evidence is weak evidence — a clean-looking unknown is not automatically benign.\n\n";
+
+    /// <summary>The fixed system prompt for the tool-calling transports. Stable so it can be prompt-cached.</summary>
+    public const string SystemPrompt = AnalysisBody +
         "You MUST respond by calling the submit_verdict tool exactly once and produce no other output. Provide a " +
         "disposition (benign, suspicious, or malicious), a calibrated confidence in [0,1], a short evidence list, any " +
         "applicable MITRE ATT&CK technique IDs (e.g. T1055), and a suggested action.";
+
+    /// <summary>
+    /// System prompt for the Claude CLI transport, which has no <c>submit_verdict</c> tool. Same analysis
+    /// and injection defense; the model emits the verdict as a bare JSON object that
+    /// <see cref="ParseClaudeCliResult"/> reads from the CLI's free-text result.
+    /// </summary>
+    public const string CliSystemPrompt = AnalysisBody +
+        "Respond with ONLY a single JSON object and nothing else — no preamble, no explanation, no prose around it. " +
+        "The object MUST have exactly these keys: \"verdict\" (one of \"benign\", \"suspicious\", \"malicious\"), " +
+        "\"confidence\" (a number from 0.0 to 1.0), \"evidence\" (an array of short strings), \"mitre_attack\" (an array " +
+        "of ATT&CK technique IDs such as \"T1055\"), and \"suggested_action\" (one of \"allow\", \"prompt\", \"block\", " +
+        "\"quarantine\"). Do not call any tool.";
 
     /// <summary>
     /// JSON Schema for the tool input. Strict-compliant (all properties required, no extra properties)
@@ -221,6 +241,49 @@ public static class LlmAnalystPrompt
             }
 
             return null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Parse a Claude Code CLI <c>--output-format json</c> envelope: require a non-error success result,
+    /// then extract the verdict JSON embedded in the free-text <c>result</c> field. The CLI does not
+    /// surface the Messages-API tool call, so the verdict is read from content and marked
+    /// <see cref="LlmVerdict.FromToolCall"/> = false — it can block or defer, never auto-allow. Returns
+    /// null for an error envelope, a non-success subtype, or any missing/unparseable verdict.
+    /// </summary>
+    public static LlmVerdict? ParseClaudeCliResult(string envelopeJson, int maxListItems)
+    {
+        try
+        {
+            using JsonDocument doc = JsonDocument.Parse(envelopeJson);
+            JsonElement root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                return null;
+            }
+
+            // Error envelope or any non-success subtype → no usable verdict.
+            if (root.TryGetProperty("is_error", out JsonElement err) && err.ValueKind == JsonValueKind.True)
+            {
+                return null;
+            }
+            if (root.TryGetProperty("subtype", out JsonElement st) && st.ValueKind == JsonValueKind.String
+                && !string.Equals(st.GetString(), "success", StringComparison.Ordinal))
+            {
+                return null;
+            }
+
+            if (!root.TryGetProperty("result", out JsonElement result) || result.ValueKind != JsonValueKind.String)
+            {
+                return null;
+            }
+
+            LlmVerdict? verdict = ParseEmbeddedJsonObject(result.GetString(), maxListItems);
+            return verdict is null ? null : verdict with { FromToolCall = false };
         }
         catch (JsonException)
         {

@@ -190,4 +190,52 @@ public sealed class LlmParsingTests
         Assert.Null(LlmAnalystPrompt.ParseOpenAiResponse("{\"choices\":[{\"message\":{\"content\":\"no json here\"}}]}", 20));
         Assert.Null(LlmAnalystPrompt.ParseOpenAiResponse("not json", 20));
     }
+
+    // ---- ParseClaudeCliResult (CLI --output-format json envelope) ----------------------------------
+
+    [Theory]
+    [InlineData(true)]   // real CLI wraps the JSON in ```json fences
+    [InlineData(false)]  // bare JSON in the result field
+    public void Cli_extracts_verdict_from_result_and_marks_it_not_a_tool_call(bool fenced)
+    {
+        LlmVerdict? v = LlmAnalystPrompt.ParseClaudeCliResult(
+            LlmTest.CliEnvelope("malicious", 0.91, "quarantine", fenced), 20);
+
+        Assert.NotNull(v);
+        Assert.Equal(LlmDisposition.Malicious, v!.Disposition);
+        Assert.Equal(0.91, v.Confidence, 3);
+        Assert.False(v.FromToolCall); // from result text → can never auto-allow
+    }
+
+    [Fact]
+    public void Cli_error_or_nonsuccess_envelope_yields_null()
+    {
+        Assert.Null(LlmAnalystPrompt.ParseClaudeCliResult(LlmTest.CliErrorEnvelope(), 20));
+        // success-shaped but result carries no JSON object
+        Assert.Null(LlmAnalystPrompt.ParseClaudeCliResult(
+            "{\"is_error\":false,\"subtype\":\"success\",\"result\":\"I refuse.\"}", 20));
+        // a non-success subtype is rejected even with is_error absent
+        Assert.Null(LlmAnalystPrompt.ParseClaudeCliResult(
+            "{\"subtype\":\"error_max_turns\",\"result\":\"{\\\"verdict\\\":\\\"benign\\\",\\\"confidence\\\":0.9}\"}", 20));
+    }
+
+    [Fact]
+    public void Cli_garbage_yields_null()
+    {
+        Assert.Null(LlmAnalystPrompt.ParseClaudeCliResult("not json", 20));
+        Assert.Null(LlmAnalystPrompt.ParseClaudeCliResult("{}", 20));
+        Assert.Null(LlmAnalystPrompt.ParseClaudeCliResult("[1,2,3]", 20));
+    }
+
+    [Fact]
+    public void Cli_and_tool_system_prompts_share_analysis_but_differ_on_output_instruction()
+    {
+        // Same role/analysis and — critically — the same injection defense in both variants.
+        Assert.Contains("senior Windows malware and threat analyst", LlmAnalystPrompt.CliSystemPrompt, StringComparison.Ordinal);
+        Assert.Contains("UNTRUSTED DATA", LlmAnalystPrompt.CliSystemPrompt, StringComparison.Ordinal);
+        // The tool variant demands submit_verdict; the CLI variant forbids tools and asks for raw JSON.
+        Assert.Contains("submit_verdict tool", LlmAnalystPrompt.SystemPrompt, StringComparison.Ordinal);
+        Assert.DoesNotContain("submit_verdict tool", LlmAnalystPrompt.CliSystemPrompt, StringComparison.Ordinal);
+        Assert.Contains("ONLY a single JSON object", LlmAnalystPrompt.CliSystemPrompt, StringComparison.Ordinal);
+    }
 }

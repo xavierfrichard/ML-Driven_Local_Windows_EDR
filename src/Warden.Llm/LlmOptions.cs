@@ -39,6 +39,32 @@ public sealed class LlmOptions
     /// <summary>Optional bearer key for the local endpoint (most local servers need none).</summary>
     public string? LocalApiKey { get; set; }
 
+    // ---- Claude Code CLI provider — PERSONAL MACHINE, subscription-backed --------------------------
+    // Shells out to the installed `claude` CLI in headless print mode (`claude -p --output-format
+    // json`). This runs Claude Code AS THE PRODUCT under the user's own login, so it draws on a Claude
+    // Pro/Max subscription rather than API-key billing — distinct from ClaudeCodeOAuth below, which
+    // extracts the session token and hits the raw API (against terms). The CLI is invoked with a
+    // no-tools sentinel and a constant system prompt; its free-text result is parsed for the verdict
+    // JSON, so the verdict is marked FromToolCall=false and can never auto-allow (block/prompt only).
+    //
+    // AUTH CAVEAT: the CLI reads the subscription login from the invoking user's profile. WardenAgent
+    // runs as LocalSystem, which has no Claude login — under the service this provider will fail auth
+    // and return null (fail-safe: the tier stays silent and the pipeline falls through to the prompt).
+    // To use it under the service, run `claude setup-token` and expose the token to the service account
+    // (e.g. a machine env var the CLI honors), or drive classification from the user-session tray UI.
+
+    /// <summary>Enable the Claude Code CLI provider. Off by default; personal / subscription use.</summary>
+    public bool EnableClaudeCli { get; set; }
+
+    /// <summary>Path to the <c>claude</c> executable. Resolved from PATH when left as the bare name.</summary>
+    public string ClaudeCliPath { get; set; } = "claude";
+
+    /// <summary>
+    /// Per-invocation timeout for the CLI. Generous by default: a cold CLI start plus model latency runs
+    /// well past the HTTP <see cref="RequestTimeout"/>, so the CLI has its own budget.
+    /// </summary>
+    public TimeSpan ClaudeCliTimeout { get; set; } = TimeSpan.FromSeconds(90);
+
     // ---- Claude Code OAuth provider — PERSONAL MACHINE ONLY ----------------------------------------
     // Uses a Claude Pro/Max subscription OAuth token as a backend. That is against Anthropic's terms
     // for product/backend use (see README.md); this provider is DISABLED by default and must never be

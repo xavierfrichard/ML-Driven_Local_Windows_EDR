@@ -21,9 +21,14 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<DossierBuilder>();
 
-        // Providers, in priority order. All three are always registered; each self-reports IsEnabled
-        // from config, and the OAuth provider stays disabled unless explicitly turned on.
+        // The claude CLI provider shells out to a process; it needs a runner, not an HttpClient.
+        services.AddSingleton<IClaudeCliRunner, ClaudeCliRunner>();
+
+        // Providers, in priority order. All are always registered; each self-reports IsEnabled from
+        // config. Anthropic API (0) < claude CLI (5) < local (10) < Claude Code OAuth (20). The CLI and
+        // OAuth providers stay disabled unless explicitly turned on.
         services.AddSingleton<IVerdictLlmProvider, AnthropicApiProvider>();
+        services.AddSingleton<IVerdictLlmProvider, ClaudeCliProvider>();
         services.AddSingleton<IVerdictLlmProvider, LocalLlmProvider>();
         services.AddSingleton<IVerdictLlmProvider, ClaudeCodeOAuthProvider>();
 
