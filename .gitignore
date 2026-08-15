@@ -58,3 +58,8 @@ Desktop.ini
 # Phase 3 ML training artifacts (generated; models versioned separately)
 ml-training/artifacts/
 ml-training/__pycache__/
+/publish/Service
+/publish/Ui
+**/Properties/PublishProfiles/
+# Machine-local backup of the DefenderUI/WDAC base policy (not product source)
+policy/wdaclockdown-backup/
