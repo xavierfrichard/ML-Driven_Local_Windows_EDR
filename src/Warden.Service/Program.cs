@@ -41,8 +41,19 @@ builder.Services.AddWardenStorage();
 builder.Services.AddWardenEtw();
 builder.Services.AddWardenTrust();
 builder.Services.AddWardenRules();
-builder.Services.AddWardenWdac();
+// Pinned to the machine's enforced base policy (DefenderUI-created, survives its uninstall) so the
+// name-heuristic fallback can never attach the supplemental to the wrong base on this box.
+builder.Services.AddWardenWdac(options =>
+{
+    options.BasePolicyGuid = "{A25BED84-7550-4AC9-8E03-6BA6E19C766F}";
+});
 builder.Services.AddWardenIpcServer();
+
+// The management channel: the tray UI reads every panel and applies policy edits through the service,
+// because %ProgramData%\Warden is ACL-locked to SYSTEM + Administrators and a user-session UI cannot
+// open the SQLite file. Mutations are refused unless the calling token is an Administrators member.
+builder.Services.AddSingleton<IMgmtHandler, MgmtRequestHandler>();
+builder.Services.AddWardenMgmtServer();
 
 // Phase 2 telemetry + reputation.
 builder.Services.AddWardenReputation();   // adds the VirusTotal IVerdictSource (pipeline tier 4)
@@ -58,6 +69,14 @@ builder.Services.AddWardenMl();          // adds the ONNX ML IVerdictSource (pip
 builder.Services.AddWardenLlm(options =>
 {
     options.AnthropicApiKey = Environment.GetEnvironmentVariable("WARDEN_ANTHROPIC_API_KEY");
+
+    // Subscription-backed analyst via the installed `claude` CLI (personal machine). Preferred when no
+    // API key is set. NOTE: the CLI reads its login from the invoking user's profile — under the
+    // LocalSystem service it fails auth and stays silent (fail-safe). To use it under the service, run
+    // `claude setup-token` and expose the token to the service account; otherwise it is live when the
+    // agent runs in the user session. Opt in explicitly with WARDEN_ENABLE_CLAUDE_CLI=1.
+    options.EnableClaudeCli =
+        string.Equals(Environment.GetEnvironmentVariable("WARDEN_ENABLE_CLAUDE_CLI"), "1", StringComparison.Ordinal);
 });
 
 // Phase 5 — Advanced + Web Apps panels. The Web Apps classifier is always-ON (no toggle) and read-only.

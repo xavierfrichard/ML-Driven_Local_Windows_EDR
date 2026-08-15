@@ -1,60 +1,32 @@
 using System.Windows;
 using System.Windows.Controls;
 using Microsoft.Win32;
+using Warden.Ipc;
 using Warden.Storage;
 
 namespace Warden.Ui;
 
 /// <summary>
-/// The Warden management window: a tab per CyberLock panel, each browsing the agent's SQLite database
-/// directly (via <see cref="Warden.Storage"/>). This is the testing/inspection surface — the service
-/// owns enforcement, so applying an allow (WDAC), a mitigation, or a firewall rule stays service-driven;
-/// the panels here read all state and support the pure-database edits (rules, protected folders, manual
-/// whitelist) that help exercise the pipeline.
+/// The Warden management window: a tab per CyberLock panel. Every read and every edit goes to the
+/// service over the management pipe (<see cref="MgmtPipeClient"/>) — the UI never opens the SQLite file,
+/// which is ACL-locked to SYSTEM + Administrators by the hardened install. Types from
+/// <see cref="Warden.Storage"/> are used only as the wire shape for display.
 /// </summary>
+/// <remarks>
+/// Policy edits require an elevated UI: the service refuses mutations whose caller is not an
+/// Administrators member, and says so in the status bar. Reads work either way.
+/// </remarks>
 public partial class MainWindow : Window
 {
-    private readonly IWardenDatabase _db;
-    private readonly IWhitelistRepository _whitelist;
-    private readonly IRulesRepository _rules;
-    private readonly ICommandLineRepository _commandLines;
-    private readonly IQuarantineRepository _quarantine;
-    private readonly IAttackChainRepository _chains;
-    private readonly IProtectedFolderRepository _folders;
-    private readonly IVulnerableAppRepository _vulnApps;
-    private readonly IMitigationProfileRepository _mitigations;
-    private readonly IFirewallRuleRepository _firewall;
-    private readonly IWebAppClassificationRepository _webApps;
-    private readonly ITamperLogRepository _tamper;
+    private readonly MgmtPipeClient _client = new();
 
     public MainWindow()
     {
         InitializeComponent();
 
-        _db = new WardenDb();
-        try
-        {
-            _db.Initialize();
-        }
-        catch (Exception ex)
-        {
-            Status("Database unavailable (is it locked to SYSTEM/Admins by a hardened install?): " + ex.Message);
-        }
-
-        _whitelist = new WhitelistRepository(_db);
-        _rules = new RulesRepository(_db);
-        _commandLines = new CommandLineRepository(_db);
-        _quarantine = new QuarantineRepository(_db);
-        _chains = new AttackChainRepository(_db);
-        _folders = new ProtectedFolderRepository(_db);
-        _vulnApps = new VulnerableAppRepository(_db);
-        _mitigations = new MitigationProfileRepository(_db);
-        _firewall = new FirewallRuleRepository(_db);
-        _webApps = new WebAppClassificationRepository(_db);
-        _tamper = new TamperLogRepository(_db);
-
-        DbPathText.Text = _db.DatabasePath;
+        DbPathText.Text = @"via WardenAgent (pipe: " + MgmtProtocol.PipeName + ")";
         Loaded += async (_, _) => await LoadAllAsync();
+        Closed += (_, _) => _client.Dispose();
     }
 
     private async Task LoadAllAsync()
@@ -74,40 +46,45 @@ public partial class MainWindow : Window
 
     // ---- per-panel loads --------------------------------------------------------------------------
 
-    private Task LoadWhitelistAsync() => SafeLoad(WhitelistGrid, () => _whitelist.GetAllAsync(), "Whitelist");
+    private Task LoadWhitelistAsync() =>
+        SafeLoad<WhitelistEntry>(WhitelistGrid, MgmtOperations.WhitelistList, "Whitelist");
 
-    private Task LoadUserLogAsync() => SafeLoad(UserLogGrid, async () =>
-        (IReadOnlyList<WhitelistEntry>)(await _whitelist.GetAllAsync())
-            .Where(w => string.Equals(w.Source, "UserPrompt", StringComparison.OrdinalIgnoreCase))
-            .ToList(),
-        "User Log");
+    private Task LoadUserLogAsync() =>
+        SafeLoad<WhitelistEntry>(UserLogGrid, MgmtOperations.UserLogList, "User Log");
 
-    private Task LoadRulesAsync() => SafeLoad(RulesGrid, () => _rules.GetAllAsync(), "Rules");
+    private Task LoadRulesAsync() =>
+        SafeLoad<RuleEntry>(RulesGrid, MgmtOperations.RulesList, "Rules");
 
-    private Task LoadCommandLinesAsync() => SafeLoad(CommandLinesGrid, () => _commandLines.GetAllAsync(), "Command Lines");
+    private Task LoadCommandLinesAsync() =>
+        SafeLoad<CommandLineRecord>(CommandLinesGrid, MgmtOperations.CommandLinesList, "Command Lines");
 
-    private Task LoadQuarantineAsync() => SafeLoad(QuarantineGrid, () => _quarantine.GetAllAsync(), "Quarantine");
+    private Task LoadQuarantineAsync() =>
+        SafeLoad<QuarantineRecord>(QuarantineGrid, MgmtOperations.QuarantineList, "Quarantine");
 
-    private Task LoadChainsAsync() => SafeLoad(ChainsGrid, () => _chains.GetRecentAsync(), "Attack Chains");
+    private Task LoadChainsAsync() =>
+        SafeLoad<AttackChainRecord>(ChainsGrid, MgmtOperations.ChainsList, "Attack Chains");
 
-    private Task LoadFoldersAsync() => SafeLoad(FoldersGrid, () => _folders.GetAllAsync(), "Protected Folders");
+    private Task LoadFoldersAsync() =>
+        SafeLoad<ProtectedFolder>(FoldersGrid, MgmtOperations.FoldersList, "Protected Folders");
 
     private async Task LoadAdvancedAsync()
     {
-        await SafeLoad(VulnAppsGrid, () => _vulnApps.GetAllAsync(), "Vulnerable apps");
-        await SafeLoad(MitigationGrid, () => _mitigations.GetAllAsync(), "Mitigation profiles");
-        await SafeLoad(FirewallGrid, () => _firewall.GetAllAsync(), "Firewall rules");
+        await SafeLoad<VulnerableAppRecord>(VulnAppsGrid, MgmtOperations.VulnAppsList, "Vulnerable apps");
+        await SafeLoad<MitigationProfileRecord>(MitigationGrid, MgmtOperations.MitigationsList, "Mitigation profiles");
+        await SafeLoad<FirewallRuleRecord>(FirewallGrid, MgmtOperations.FirewallList, "Firewall rules");
     }
 
-    private Task LoadWebAppsAsync() => SafeLoad(WebAppsGrid, () => _webApps.GetAllAsync(), "Web Apps");
+    private Task LoadWebAppsAsync() =>
+        SafeLoad<WebAppClassificationRecord>(WebAppsGrid, MgmtOperations.WebAppsList, "Web Apps");
 
-    private Task LoadTamperAsync() => SafeLoad(TamperGrid, () => _tamper.GetRecentAsync(), "Tamper Log");
+    private Task LoadTamperAsync() =>
+        SafeLoad<TamperEventRecord>(TamperGrid, MgmtOperations.TamperList, "Tamper Log");
 
-    private async Task SafeLoad<T>(DataGrid grid, Func<Task<IReadOnlyList<T>>> loader, string name)
+    private async Task SafeLoad<T>(DataGrid grid, string operation, string name)
     {
         try
         {
-            IReadOnlyList<T> rows = await loader();
+            IReadOnlyList<T> rows = await _client.ListAsync<T>(operation);
             grid.ItemsSource = rows;
             Status($"{name}: {rows.Count} row(s).");
         }
@@ -131,23 +108,14 @@ public partial class MainWindow : Window
     private async void RefreshWebApps_Click(object sender, RoutedEventArgs e) => await LoadWebAppsAsync();
     private async void RefreshTamper_Click(object sender, RoutedEventArgs e) => await LoadTamperAsync();
 
-    // ---- edit actions (pure database writes) ------------------------------------------------------
+    // ---- edit actions (all applied by the service) ------------------------------------------------
 
     private async void AddRule_Click(object sender, RoutedEventArgs e)
     {
         var dlg = new AddRuleWindow { Owner = this };
         if (dlg.ShowDialog() == true && dlg.Result is { } rule)
         {
-            try
-            {
-                await _rules.AddAsync(rule);
-                await LoadRulesAsync();
-                Status("Rule added.");
-            }
-            catch (Exception ex)
-            {
-                Status("Add rule failed: " + ex.Message);
-            }
+            await MutateAsync(MgmtOperations.RulesAdd, rule, "Rule added.", LoadRulesAsync);
         }
     }
 
@@ -155,16 +123,7 @@ public partial class MainWindow : Window
     {
         if (RulesGrid.SelectedItem is RuleEntry rule)
         {
-            try
-            {
-                await _rules.DeleteAsync(rule.Id);
-                await LoadRulesAsync();
-                Status("Rule deleted.");
-            }
-            catch (Exception ex)
-            {
-                Status("Delete rule failed: " + ex.Message);
-            }
+            await MutateAsync(MgmtOperations.RulesDelete, new IdPayload(rule.Id), "Rule deleted.", LoadRulesAsync);
         }
         else
         {
@@ -177,22 +136,14 @@ public partial class MainWindow : Window
         var dlg = new OpenFolderDialog { Title = "Choose a folder to protect" };
         if (dlg.ShowDialog(this) == true)
         {
-            try
+            var folder = new ProtectedFolder
             {
-                await _folders.AddAsync(new ProtectedFolder
-                {
-                    Path = dlg.FolderName,
-                    Recursive = true,
-                    MonitorMode = "monitor",
-                    AddedTs = DateTimeOffset.UtcNow,
-                });
-                await LoadFoldersAsync();
-                Status("Protected folder added.");
-            }
-            catch (Exception ex)
-            {
-                Status("Add folder failed: " + ex.Message);
-            }
+                Path = dlg.FolderName,
+                Recursive = true,
+                MonitorMode = "monitor",
+                AddedTs = DateTimeOffset.UtcNow,
+            };
+            await MutateAsync(MgmtOperations.FoldersAdd, folder, "Protected folder added.", LoadFoldersAsync);
         }
     }
 
@@ -200,16 +151,8 @@ public partial class MainWindow : Window
     {
         if (FoldersGrid.SelectedItem is ProtectedFolder folder)
         {
-            try
-            {
-                await _folders.DeleteAsync(folder.Id);
-                await LoadFoldersAsync();
-                Status("Protected folder removed.");
-            }
-            catch (Exception ex)
-            {
-                Status("Remove folder failed: " + ex.Message);
-            }
+            await MutateAsync(
+                MgmtOperations.FoldersDelete, new IdPayload(folder.Id), "Protected folder removed.", LoadFoldersAsync);
         }
         else
         {
@@ -222,16 +165,98 @@ public partial class MainWindow : Window
         var dlg = new AddWhitelistWindow { Owner = this };
         if (dlg.ShowDialog() == true && dlg.Result is { } entry)
         {
-            try
-            {
-                await _whitelist.AddAsync(entry);
-                await LoadWhitelistAsync();
-                Status("Whitelist entry added.");
-            }
-            catch (Exception ex)
-            {
-                Status("Add whitelist entry failed: " + ex.Message);
-            }
+            await MutateAsync(
+                MgmtOperations.WhitelistAdd, entry, "Whitelist entry saved.", LoadWhitelistAsync);
+        }
+    }
+
+    // ---- whitelist / user-log action toggles ------------------------------------------------------
+
+    private async void WhitelistAllow_Click(object sender, RoutedEventArgs e) =>
+        await SetWhitelistActionAsync(WhitelistGrid, PolicyAction.Allow, LoadWhitelistAsync);
+
+    private async void WhitelistBlock_Click(object sender, RoutedEventArgs e) =>
+        await SetWhitelistActionAsync(WhitelistGrid, PolicyAction.Block, LoadWhitelistAsync);
+
+    private async void UserLogAllow_Click(object sender, RoutedEventArgs e) =>
+        await SetWhitelistActionAsync(UserLogGrid, PolicyAction.Allow, LoadUserLogAsync);
+
+    private async void UserLogBlock_Click(object sender, RoutedEventArgs e) =>
+        await SetWhitelistActionAsync(UserLogGrid, PolicyAction.Block, LoadUserLogAsync);
+
+    /// <summary>
+    /// Flips the selected entry between Allow and Block. Setting Block revokes a previously-allowed
+    /// file: the whitelist tier replays that decision for the hash on the next launch.
+    /// </summary>
+    private async Task SetWhitelistActionAsync(DataGrid grid, PolicyAction action, Func<Task> reload)
+    {
+        if (grid.SelectedItem is not WhitelistEntry entry)
+        {
+            Status("Select a row first.");
+            return;
+        }
+
+        await MutateAsync(
+            MgmtOperations.WhitelistSetAction,
+            new SetActionPayload(entry.Id, (int)action),
+            $"{entry.ProcessName} set to {action}.",
+            reload);
+    }
+
+    // ---- Advanced panel: per-app firewall checkboxes ----------------------------------------------
+
+    /// <summary>
+    /// Applies an inbound/outbound firewall block for the row's app. The grid is reloaded afterwards so
+    /// the checkbox always shows the state the service actually persisted — if the change is refused
+    /// (for example a seeded exe name that has no full path yet) the box snaps back.
+    /// </summary>
+    private async void FirewallCheck_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not CheckBox box || box.DataContext is not VulnerableAppRecord app)
+        {
+            return;
+        }
+
+        bool inBlocked = app.FwInBlocked;
+        bool outBlocked = app.FwOutBlocked;
+        bool value = box.IsChecked == true;
+
+        if (string.Equals(box.Tag as string, "in", StringComparison.Ordinal))
+        {
+            inBlocked = value;
+        }
+        else
+        {
+            outBlocked = value;
+        }
+
+        try
+        {
+            await _client.InvokeAsync(
+                MgmtOperations.VulnAppSetFirewall,
+                new SetFirewallPayload(app.Id, app.AppPath, inBlocked, outBlocked));
+            Status($"Firewall for {app.AppPath}: inbound={inBlocked}, outbound={outBlocked}.");
+        }
+        catch (Exception ex)
+        {
+            Status("Firewall change failed: " + ex.Message);
+        }
+
+        await LoadAdvancedAsync();
+    }
+
+    /// <summary>Runs a mutating call, reporting success or the service's refusal in the status bar.</summary>
+    private async Task MutateAsync(string operation, object payload, string success, Func<Task> reload)
+    {
+        try
+        {
+            await _client.InvokeAsync(operation, payload);
+            await reload();
+            Status(success);
+        }
+        catch (Exception ex)
+        {
+            Status(ex.Message);
         }
     }
 

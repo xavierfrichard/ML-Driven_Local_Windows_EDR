@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 
 namespace Warden.Ipc;
 
@@ -25,6 +26,44 @@ public static class ServiceCollectionExtensions
         services.AddHostedService<PromptPipeServerHostedService>();
 
         return services;
+    }
+
+    /// <summary>
+    /// Registers the management channel host. Requires an <see cref="IMgmtHandler"/> registration (the
+    /// service supplies one over its repositories) and starts the pipe with the host.
+    /// </summary>
+    public static IServiceCollection AddWardenMgmtServer(this IServiceCollection services)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+
+        services.TryAddSingleton(sp => new MgmtPipeServer(
+            sp.GetRequiredService<IMgmtHandler>(),
+            ex => sp.GetRequiredService<ILoggerFactory>()
+                .CreateLogger<MgmtPipeServer>()
+                .LogWarning(ex, "Management pipe error (connection dropped or malformed frame).")));
+        services.AddHostedService<MgmtPipeServerHostedService>();
+
+        return services;
+    }
+}
+
+/// <summary>Starts the management pipe with the host and disposes it on shutdown.</summary>
+internal sealed class MgmtPipeServerHostedService : IHostedService
+{
+    private readonly MgmtPipeServer _server;
+
+    public MgmtPipeServerHostedService(MgmtPipeServer server) => _server = server;
+
+    public Task StartAsync(CancellationToken cancellationToken)
+    {
+        _server.Start();
+        return Task.CompletedTask;
+    }
+
+    public Task StopAsync(CancellationToken cancellationToken)
+    {
+        _server.Dispose();
+        return Task.CompletedTask;
     }
 }
 

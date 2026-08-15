@@ -9,6 +9,14 @@ public interface IVulnerableAppRepository
     Task<IReadOnlyList<VulnerableAppRecord>> GetAllAsync(CancellationToken cancellationToken = default);
     Task<int> CountAsync(CancellationToken cancellationToken = default);
     Task DeleteAsync(long id, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Records the per-app firewall block state shown in the Advanced panel. The actual Windows Firewall
+    /// rules are created/removed by the service alongside this call.
+    /// </summary>
+    Task SetFirewallStateAsync(long id, bool inBlocked, bool outBlocked, CancellationToken cancellationToken = default);
+
+    Task<VulnerableAppRecord?> GetByIdAsync(long id, CancellationToken cancellationToken = default);
 }
 
 /// <summary>Advanced-panel mitigation-profile persistence (one per app, by path).</summary>

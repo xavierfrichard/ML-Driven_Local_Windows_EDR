@@ -27,6 +27,9 @@ public interface IWhitelistRepository
     Task<WhitelistEntry?> FindLatestBySha256Async(string sha256, CancellationToken cancellationToken = default);
 
     Task<IReadOnlyList<WhitelistEntry>> GetAllAsync(int limit = 1000, CancellationToken cancellationToken = default);
+
+    /// <summary>Flips an existing entry between Allow and Block (revoking or restoring a file).</summary>
+    Task SetActionAsync(long id, PolicyAction action, CancellationToken cancellationToken = default);
 }
 
 /// <summary>Rules panel persistence.</summary>

@@ -37,6 +37,11 @@
                         <Button Content="Refresh" Click="RefreshWhitelist_Click" />
                         <Separator />
                         <Button Content="Manual Add…" Click="AddWhitelist_Click" />
+                        <Separator />
+                        <Button Content="Set Allow" Click="WhitelistAllow_Click" />
+                        <Button Content="Set Block" Click="WhitelistBlock_Click" />
+                        <TextBlock VerticalAlignment="Center" Margin="8,0,0,0" Foreground="Gray"
+                                   Text="One row per SHA-256 — Set Block revokes a previously allowed file." />
                     </ToolBar>
                     <DataGrid x:Name="WhitelistGrid" AutoGenerateColumns="False">
                         <DataGrid.Columns>
@@ -62,6 +67,9 @@
                 <DockPanel>
                     <ToolBar DockPanel.Dock="Top">
                         <Button Content="Refresh" Click="RefreshUserLog_Click" />
+                        <Separator />
+                        <Button Content="Set Allow" Click="UserLogAllow_Click" />
+                        <Button Content="Set Block" Click="UserLogBlock_Click" />
                     </ToolBar>
                     <DataGrid x:Name="UserLogGrid" />
                 </DockPanel>
@@ -130,7 +138,7 @@
                         <Button Content="Refresh" Click="RefreshAdvanced_Click" />
                         <Separator />
                         <TextBlock VerticalAlignment="Center" Foreground="Gray"
-                                   Text="Read-only: applying mitigations/firewall rules is service/installer-driven (VM, audit-first)." />
+                                   Text="Firewall checkboxes apply real Windows Firewall rules via the service. Mitigation profiles stay installer-driven." />
                     </ToolBar>
                     <Grid>
                         <Grid.RowDefinitions>
@@ -139,7 +147,38 @@
                             <RowDefinition Height="*" />
                         </Grid.RowDefinitions>
                         <GroupBox Grid.Row="0" Header="Vulnerable apps (EP-reset ∪ LOLBAS)">
-                            <DataGrid x:Name="VulnAppsGrid" />
+                            <!-- Explicit columns: the shared style makes grids read-only (so text cells cannot be
+                                 edited), which renders an auto-generated DataGridCheckBoxColumn permanently
+                                 disabled. A CheckBox in a template column is a live control, not an edit-mode
+                                 cell, so it stays clickable and raises Click on the first press. -->
+                            <DataGrid x:Name="VulnAppsGrid" AutoGenerateColumns="False">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="App" Binding="{Binding AppPath}" Width="320" />
+                                    <DataGridTextColumn Header="Publisher" Binding="{Binding Publisher}" Width="160" />
+                                    <DataGridTextColumn Header="Reason" Binding="{Binding Reason}" />
+                                    <DataGridTemplateColumn Header="Block inbound">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <CheckBox Tag="in"
+                                                          HorizontalAlignment="Center"
+                                                          IsChecked="{Binding FwInBlocked, Mode=OneWay}"
+                                                          Click="FirewallCheck_Click" />
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                    <DataGridTemplateColumn Header="Block outbound">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <CheckBox Tag="out"
+                                                          HorizontalAlignment="Center"
+                                                          IsChecked="{Binding FwOutBlocked, Mode=OneWay}"
+                                                          Click="FirewallCheck_Click" />
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                    <DataGridTextColumn Header="Mitigation profile" Binding="{Binding MitigationProfileId}" />
+                                </DataGrid.Columns>
+                            </DataGrid>
                         </GroupBox>
                         <GroupBox Grid.Row="1" Header="Mitigation profiles">
                             <DataGrid x:Name="MitigationGrid" />

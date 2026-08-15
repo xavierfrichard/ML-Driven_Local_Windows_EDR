@@ -43,6 +43,22 @@ public sealed class VulnerableAppRepository : IVulnerableAppRepository
         await c.ExecuteAsync(new CommandDefinition("DELETE FROM vulnerable_apps WHERE Id = @id;", new { id }, cancellationToken: cancellationToken))
             .ConfigureAwait(false);
     }
+
+    public async Task SetFirewallStateAsync(long id, bool inBlocked, bool outBlocked, CancellationToken cancellationToken = default)
+    {
+        await using var c = _db.OpenConnection();
+        const string sql = "UPDATE vulnerable_apps SET FwInBlocked = @inBlocked, FwOutBlocked = @outBlocked WHERE Id = @id;";
+        await c.ExecuteAsync(new CommandDefinition(sql, new { id, inBlocked, outBlocked }, cancellationToken: cancellationToken))
+            .ConfigureAwait(false);
+    }
+
+    public async Task<VulnerableAppRecord?> GetByIdAsync(long id, CancellationToken cancellationToken = default)
+    {
+        await using var c = _db.OpenConnection();
+        return await c.QueryFirstOrDefaultAsync<VulnerableAppRecord>(
+            new CommandDefinition("SELECT * FROM vulnerable_apps WHERE Id = @id;", new { id }, cancellationToken: cancellationToken))
+            .ConfigureAwait(false);
+    }
 }
 
 /// <summary>Dapper-backed mitigation-profile persistence.</summary>

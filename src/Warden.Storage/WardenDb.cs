@@ -51,10 +51,31 @@ public sealed class WardenDb : IWardenDatabase
             pragma.ExecuteNonQuery();
         }
 
-        using var cmd = connection.CreateCommand();
-        cmd.CommandText = Schema;
-        cmd.ExecuteNonQuery();
+        using (var cmd = connection.CreateCommand())
+        {
+            cmd.CommandText = Schema;
+            cmd.ExecuteNonQuery();
+        }
+
+        using var migrate = connection.CreateCommand();
+        migrate.CommandText = Migrations;
+        migrate.ExecuteNonQuery();
     }
+
+    /// <summary>
+    /// Idempotent schema upgrades applied after <see cref="Schema"/>. There is no migration framework
+    /// here by design: each statement must be safe to run on both a fresh and an existing database.
+    /// </summary>
+    private const string Migrations = """
+        -- The whitelist is the CURRENT decision per file, not a verdict log: one row per SHA-256.
+        -- Earlier builds inserted a row per evaluation, so the same file accumulated duplicates.
+        -- Collapse them (keeping the newest row per hash) before enforcing uniqueness.
+        DELETE FROM whitelist
+        WHERE Id NOT IN (SELECT MAX(Id) FROM whitelist GROUP BY Sha256 COLLATE NOCASE);
+
+        DROP INDEX IF EXISTS IX_whitelist_sha256;
+        CREATE UNIQUE INDEX IF NOT EXISTS UX_whitelist_sha256 ON whitelist(Sha256 COLLATE NOCASE);
+        """;
 
     // Column names match the entity property names so Dapper maps them directly (no underscore config).
     private const string Schema = """
@@ -77,7 +98,7 @@ public sealed class WardenDb : IWardenDatabase
             Source         TEXT    NOT NULL,
             RuleId         INTEGER
         );
-        CREATE INDEX IF NOT EXISTS IX_whitelist_sha256 ON whitelist(Sha256);
+        -- The uniqueness of Sha256 is established in Migrations (existing databases need de-duping first).
 
         CREATE TABLE IF NOT EXISTS rules (
             Id               INTEGER PRIMARY KEY AUTOINCREMENT,

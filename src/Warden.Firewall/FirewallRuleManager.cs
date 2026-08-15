@@ -12,6 +12,13 @@ public interface IFirewallRuleManager
     /// <summary>Remove all Warden-created rules for an app.</summary>
     void UnblockApp(string appPath);
 
+    /// <summary>
+    /// Sets an app's block state per direction (the Advanced panel's two checkboxes). Idempotent:
+    /// existing Warden rules for the app are removed first, then only the requested directions are
+    /// created. Passing false for both is equivalent to <see cref="UnblockApp"/>.
+    /// </summary>
+    IReadOnlyList<FirewallRuleSpec> SetBlocked(string appPath, bool inbound, bool outbound);
+
     /// <summary>Names of the Warden-created firewall rules currently present.</summary>
     IReadOnlyList<string> ListWardenRuleNames();
 }
@@ -57,6 +64,38 @@ public sealed class FirewallRuleManager : IFirewallRuleManager
         }
 
         return specs;
+    }
+
+    public IReadOnlyList<FirewallRuleSpec> SetBlocked(string appPath, bool inbound, bool outbound)
+    {
+        // Rebuild from scratch so the resulting rule set always matches the requested state exactly.
+        UnblockApp(appPath);
+
+        if (!inbound && !outbound)
+        {
+            return Array.Empty<FirewallRuleSpec>();
+        }
+
+        var wanted = FirewallRuleSpecs.BlockBoth(appPath)
+            .Where(s => s.Direction == FirewallDirection.Inbound ? inbound : outbound)
+            .ToList();
+
+        dynamic policy = CreatePolicy();
+        foreach (FirewallRuleSpec spec in wanted)
+        {
+            dynamic rule = CreateRuleObject();
+            rule.Name = spec.RuleName;
+            rule.Description = "Created by the Warden zero-trust agent.";
+            rule.ApplicationName = spec.AppPath;
+            rule.Direction = spec.Direction == FirewallDirection.Inbound ? DirIn : DirOut;
+            rule.Action = ActionBlock;
+            rule.Protocol = ProtocolAny;
+            rule.Profiles = ProfilesAll;
+            rule.Enabled = true;
+            policy.Rules.Add(rule);
+        }
+
+        return wanted;
     }
 
     public void UnblockApp(string appPath)

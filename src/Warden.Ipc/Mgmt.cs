@@ -1,0 +1,97 @@
+namespace Warden.Ipc;
+
+/// <summary>
+/// Operation names for the management channel. Reads are readable by any authenticated local user;
+/// every name in <see cref="Mutations"/> changes agent policy and is refused unless the calling
+/// process token is a member of the local Administrators group (see <c>MgmtPipeServer</c>).
+/// </summary>
+public static class MgmtOperations
+{
+    // ---- reads ------------------------------------------------------------------------------------
+    public const string WhitelistList = "whitelist.list";
+    public const string UserLogList = "userlog.list";
+    public const string RulesList = "rules.list";
+    public const string CommandLinesList = "commandlines.list";
+    public const string QuarantineList = "quarantine.list";
+    public const string ChainsList = "chains.list";
+    public const string FoldersList = "folders.list";
+    public const string VulnAppsList = "vulnapps.list";
+    public const string MitigationsList = "mitigations.list";
+    public const string FirewallList = "firewall.list";
+    public const string WebAppsList = "webapps.list";
+    public const string TamperList = "tamper.list";
+
+    // ---- mutations (Administrators only) ----------------------------------------------------------
+    public const string RulesAdd = "rules.add";
+    public const string RulesDelete = "rules.delete";
+    public const string FoldersAdd = "folders.add";
+    public const string FoldersDelete = "folders.delete";
+    public const string WhitelistAdd = "whitelist.add";
+    public const string WhitelistSetAction = "whitelist.setaction";
+    public const string VulnAppSetFirewall = "vulnapp.setfirewall";
+
+    /// <summary>Operations that change agent state and therefore require an elevated caller.</summary>
+    public static readonly IReadOnlySet<string> Mutations = new HashSet<string>(StringComparer.Ordinal)
+    {
+        RulesAdd,
+        RulesDelete,
+        FoldersAdd,
+        FoldersDelete,
+        WhitelistAdd,
+        WhitelistSetAction,
+        VulnAppSetFirewall,
+    };
+
+    /// <summary>True when <paramref name="operation"/> changes state and needs Administrators.</summary>
+    public static bool IsMutation(string operation) => Mutations.Contains(operation);
+}
+
+/// <summary>
+/// A management request from the tray UI (user session) to the service (session 0).
+/// <paramref name="PayloadJson"/> carries the operation's argument object, or null for a plain read.
+/// </summary>
+public sealed record MgmtRequest(Guid RequestId, string Operation, string? PayloadJson);
+
+/// <summary>
+/// The service's reply. <paramref name="Ok"/> false always carries a human-readable
+/// <paramref name="Error"/>; the UI shows it in the status bar rather than throwing.
+/// </summary>
+public sealed record MgmtResponse(Guid RequestId, bool Ok, string? Error, string? PayloadJson)
+{
+    public static MgmtResponse Fail(Guid id, string error) => new(id, false, error, null);
+
+    public static MgmtResponse Success(Guid id, string? payloadJson = null) => new(id, true, null, payloadJson);
+}
+
+/// <summary>Argument payloads. Kept primitive so the wire format stays stable and UI-friendly.</summary>
+public sealed record SetActionPayload(long Id, int Action);
+
+/// <summary>Argument for toggling an app's inbound/outbound firewall block from the Advanced panel.</summary>
+public sealed record SetFirewallPayload(long Id, string AppPath, bool BlockInbound, bool BlockOutbound);
+
+/// <summary>Argument for the delete-by-id operations.</summary>
+public sealed record IdPayload(long Id);
+
+/// <summary>
+/// Service-side dispatcher for management requests. Implementations own every database write, so the
+/// tray UI never opens the (hardened, SYSTEM-owned) SQLite file itself.
+/// </summary>
+public interface IMgmtHandler
+{
+    /// <param name="callerIsAdmin">
+    /// Whether the connected client's token is a member of the local Administrators group, resolved by
+    /// impersonating the pipe client. Implementations must not perform a mutation when this is false.
+    /// </param>
+    Task<MgmtResponse> HandleAsync(MgmtRequest request, bool callerIsAdmin, CancellationToken cancellationToken);
+}
+
+/// <summary>Shared constants for the management channel (separate pipe from the block-prompt channel).</summary>
+public static class MgmtProtocol
+{
+    /// <summary>Named pipe the service hosts for management traffic.</summary>
+    public const string PipeName = "WardenAgent.Mgmt.v1";
+
+    /// <summary>Message the server returns when a non-elevated caller attempts a mutation.</summary>
+    public const string ElevationRequired =
+        "This change requires an elevated Warden UI (the agent's policy is Administrators-only).";
+}

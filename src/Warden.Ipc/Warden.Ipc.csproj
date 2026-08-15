@@ -7,6 +7,9 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="8.0.2" />
     <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="8.0.1" />
+    <!-- NamedPipeServerStreamAcl: the management pipe sets an explicit DACL so a user-session UI can
+         connect (read) while policy changes stay gated on an impersonated Administrators check. -->
+    <PackageReference Include="System.IO.Pipes.AccessControl" Version="5.0.0" />
   </ItemGroup>
 
   <PropertyGroup>
