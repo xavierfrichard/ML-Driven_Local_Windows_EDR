@@ -213,5 +213,12 @@ if ($uiTarget) {
 Write-Host "Starting $ServiceName ..."
 & sc.exe start $ServiceName | Out-Null
 
+# Bring the (elevated) tray up right away in this session so nobody has to log off/on to get it: the task
+# runs as the interactive user at Highest run level, so this is the same thing the logon trigger would do.
+if ($uiTarget) {
+    Write-Host 'Starting the tray UI ...'
+    Start-ScheduledTask -TaskName 'WardenUi' -ErrorAction SilentlyContinue
+}
+
 Write-Host 'Warden installed and started. Verify with:  sc.exe qc WardenAgent  /  sc.exe sdshow WardenAgent'
 Write-Host "  binaries: $InstallDir   data: $DataDir   host: $DotnetHost"

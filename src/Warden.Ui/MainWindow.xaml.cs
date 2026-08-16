@@ -166,7 +166,10 @@ public partial class MainWindow : Window
         var dlg = new AddRuleWindow { Owner = this };
         if (dlg.ShowDialog() == true && dlg.Result is { } rule)
         {
-            await MutateAsync(MgmtOperations.RulesAdd, rule, "Rule added.", LoadRulesAsync);
+            // Envelope: the rule plus the file its hash/publisher came from, so the service can allow-list
+            // that file immediately (see RuleAddPayload).
+            await MutateAsync(MgmtOperations.RulesAdd, new { Rule = rule, SourcePath = dlg.SourcePath }, "Rule added.", LoadRulesAsync);
+            await LoadWhitelistAsync();
         }
     }
 

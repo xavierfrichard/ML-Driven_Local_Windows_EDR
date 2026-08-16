@@ -99,6 +99,18 @@ public sealed record MgmtMessage(string Text);
 /// <summary>Argument for <see cref="MgmtOperations.WhitelistAllowFile"/>: allow one file by path, immediately.</summary>
 public sealed record AllowFilePayload(string Path);
 
+/// <summary>
+/// Shape of the <see cref="MgmtOperations.RulesAdd"/> payload: <c>{ "Rule": &lt;RuleEntry&gt;, "SourcePath": "…" }</c>.
+/// <c>SourcePath</c> is the file the rule's match value was derived from (Browse… on a Hash/Signature rule)
+/// so the service can allow-list that very file now. A bare <c>RuleEntry</c> object is still accepted.
+/// (Declared as documentation only: the entity type lives in Warden.Storage, which this assembly does not reference.)
+/// </summary>
+public static class RuleAddPayload
+{
+    public const string RuleProperty = "Rule";
+    public const string SourcePathProperty = "SourcePath";
+}
+
 /// <summary>Argument payloads. Kept primitive so the wire format stays stable and UI-friendly.</summary>
 public sealed record SetActionPayload(long Id, int Action);
 

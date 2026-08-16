@@ -197,9 +197,20 @@ public sealed partial class MgmtRequestHandler : IMgmtHandler
 
     // ---- mutations --------------------------------------------------------------------------------
 
+    /// <summary>Wire shape of rules.add: the rule plus (optionally) the file its match value came from.</summary>
+    private sealed record RuleEnvelope(RuleEntry? Rule, string? SourcePath);
+
     private async Task<MgmtResponse> AddRuleAsync(Guid id, string? payload, CancellationToken cancellationToken)
     {
-        if (!TryParse(payload, out RuleEntry? rule, out string? error))
+        // { Rule, SourcePath } envelope (Browse… in the dialog) or a bare RuleEntry (older callers).
+        RuleEntry? rule = null;
+        string? sourcePath = null;
+        if (TryParse(payload, out RuleEnvelope? env, out _) && env?.Rule is not null)
+        {
+            rule = env.Rule;
+            sourcePath = env.SourcePath;
+        }
+        else if (!TryParse(payload, out rule, out string? error))
         {
             return MgmtResponse.Fail(id, error);
         }
@@ -211,6 +222,29 @@ public sealed partial class MgmtRequestHandler : IMgmtHandler
 
         long newId = await _rules.AddAsync(rule!, cancellationToken).ConfigureAwait(false);
         _logger.LogInformation("Mgmt: rule {Id} added ({Kind} {Action}).", newId, rule!.Kind, rule.Action);
+
+        // The dialog told us which file the hash / publisher came from: allow-list THAT file now (for a
+        // Hash rule its bytes must still match the hash; for a Signature rule the picked file is allowed
+        // outright and the rule covers the publisher's other files on their next launch).
+        if (rule.Action == PolicyAction.Allow && rule.Kind is RuleKind.Hash or RuleKind.Signature
+            && !string.IsNullOrWhiteSpace(sourcePath)
+            && IsAcceptableLocalPath(sourcePath, allowDriveRoot: false, out string sourceCanonical, out _)
+            && File.Exists(sourceCanonical))
+        {
+            string? expected = rule.Kind == RuleKind.Hash ? rule.MatchValue : null;
+            WdacBatchResult batch = await _wdac.AllowManyAsync(
+                new[] { new WdacAllowFile(sourceCanonical, expected) }, cancellationToken).ConfigureAwait(false);
+            WdacFileAllowResult r = batch.Files[0];
+            if (batch.Success && r.Success && r.Sha256 is not null)
+            {
+                await RecordAdminAllowAsync(sourceCanonical, r.Sha256, "Rules", newId, cancellationToken).ConfigureAwait(false);
+                return Message(id, rule.Kind == RuleKind.Hash
+                    ? $"Rule added and {Path.GetFileName(sourceCanonical)} allow-listed in WDAC now. Relaunch the app."
+                    : $"Rule added; {Path.GetFileName(sourceCanonical)} allow-listed in WDAC now. Other files from this publisher are allowed on their next launch.");
+            }
+            _logger.LogWarning("Mgmt: immediate allow for rule {Id} source {Path} failed: {Error}", newId, sourceCanonical, batch.Error ?? r.Error);
+            return Message(id, $"Rule added, but {Path.GetFileName(sourceCanonical)} could not be allow-listed now ({batch.Error ?? r.Error}). It will apply on the file's next launch.");
+        }
 
         // An Allow rule only takes effect at the file's NEXT block otherwise (the pipeline consults rules
         // when WDAC raises an event). For the two kinds where the files are knowable now, deploy the WDAC
@@ -448,16 +482,40 @@ public sealed partial class MgmtRequestHandler : IMgmtHandler
             return MgmtResponse.Fail(id, "Unknown action value.");
         }
 
+        // A manual entry is an administrator's decision: it carries the authoritative "Admin" source so an
+        // automatic tier can never overwrite it (see WhitelistRepository.AuthoritativeSources).
         var normalized = entry with
         {
             Sha256 = entry.Sha256.ToUpperInvariant(),
-            Source = string.IsNullOrWhiteSpace(entry.Source) ? "Admin" : entry.Source,
+            Source = "Admin",
             Timestamp = entry.Timestamp == default ? DateTimeOffset.UtcNow : entry.Timestamp,
         };
 
         await _whitelist.AddAsync(normalized, cancellationToken).ConfigureAwait(false);
         _logger.LogInformation("Mgmt: whitelist entry upserted for {Sha}.", normalized.Sha256);
-        return MgmtResponse.Success(id);
+
+        if (normalized.Action != PolicyAction.Allow)
+        {
+            // A manual Block: make sure no allow rule for that hash survives in WDAC.
+            WdacUpdateResult revoke = await _wdac.RevokeAsync(normalized.Sha256, normalized.ProcessName, cancellationToken).ConfigureAwait(false);
+            return Message(id, revoke.Success
+                ? $"{normalized.ProcessName} recorded as Block."
+                : $"{normalized.ProcessName} recorded as Block, but an existing WDAC allow rule could not be removed: {revoke.Error}");
+        }
+
+        if (!IsAcceptableLocalPath(normalized.ProcessPath, allowDriveRoot: false, out string canonical, out _) || !File.Exists(canonical))
+        {
+            return Message(id, $"{normalized.ProcessName} recorded as Allow. The file is not at that path, so the WDAC rule will be deployed on its next launch (blocked once, then allowed).");
+        }
+
+        WdacBatchResult batch = await _wdac.AllowManyAsync(
+            new[] { new WdacAllowFile(canonical, normalized.Sha256) }, cancellationToken).ConfigureAwait(false);
+        WdacFileAllowResult r = batch.Files[0];
+        if (batch.Success && r.Success)
+        {
+            return Message(id, $"{normalized.ProcessName} is now allowed (WDAC rule deployed). Relaunch the app.");
+        }
+        return Message(id, $"{normalized.ProcessName} recorded as Allow, but the WDAC rule could not be deployed now: {batch.Error ?? r.Error}. If the file changed, use 'Allow file…' to allow the current bytes.");
     }
 
     /// <summary>

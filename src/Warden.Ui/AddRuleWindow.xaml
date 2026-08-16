@@ -1,14 +1,22 @@
 <Window x:Class="Warden.Ui.AddRuleWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Add Rule" Width="440" SizeToContent="Height"
+        Title="Add Rule" Width="520" SizeToContent="Height"
         WindowStartupLocation="CenterOwner" ResizeMode="NoResize" ShowInTaskbar="False">
     <StackPanel Margin="16">
         <TextBlock Text="Kind" />
-        <ComboBox x:Name="KindBox" Margin="0,2,0,8" />
+        <ComboBox x:Name="KindBox" Margin="0,2,0,8" SelectionChanged="KindBox_SelectionChanged" />
 
-        <TextBlock Text="Match value (SHA-256 / signer substring / folder prefix / .ext)" TextWrapping="Wrap" />
-        <TextBox x:Name="MatchBox" Margin="0,2,0,8" />
+        <TextBlock x:Name="MatchHint" Text="Match value" TextWrapping="Wrap" />
+        <Grid Margin="0,2,0,2">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <TextBox x:Name="MatchBox" Grid.Column="0" FontFamily="Consolas" />
+            <Button x:Name="BrowseButton" Grid.Column="1" Content="Browse…" Width="84" Margin="8,0,0,0" Click="Browse_Click" />
+        </Grid>
+        <TextBlock x:Name="SourceHint" Text="" Foreground="Gray" TextWrapping="Wrap" Margin="0,0,0,8" />
 
         <TextBlock Text="Action" />
         <ComboBox x:Name="ActionBox" Margin="0,2,0,8" />
