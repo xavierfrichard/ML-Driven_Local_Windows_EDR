@@ -37,18 +37,48 @@ public sealed class WdacAllowlistManager : IWdacAllowlistManager
     public async Task<WdacUpdateResult> AllowAsync(WdacAllowRequest request, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
+
+        // The pipeline path: the judged hash is mandatory — no hash means the file could not be hashed at
+        // inspection time, and unknown bytes are never allow-listed.
+        if (string.IsNullOrWhiteSpace(request.Sha256))
+        {
+            return WdacUpdateResult.Fail("No judged hash supplied; refusing to allow-list unverified bytes.");
+        }
+
+        WdacBatchResult batch = await AllowManyAsync(
+            new[] { new WdacAllowFile(request.ImagePath, request.Sha256) }, cancellationToken).ConfigureAwait(false);
+
+        WdacFileAllowResult? file = batch.Files.Count > 0 ? batch.Files[0] : null;
+        if (!batch.Success)
+        {
+            return WdacUpdateResult.Fail(batch.Error ?? file?.Error ?? "WDAC allow failed.");
+        }
+        if (file is null || !file.Success)
+        {
+            return WdacUpdateResult.Fail(file?.Error ?? "WDAC allow failed.");
+        }
+
+        return new WdacUpdateResult(true, $"hash:{request.Sha256}", batch.PolicyGuid, batch.BackupPath, null);
+    }
+
+    /// <summary>Largest file that is allow-listed (copied for scanning) — an administrator's click must not copy gigabytes.</summary>
+    private const long MaxAllowFileBytes = 256L * 1024 * 1024;
+
+    public async Task<WdacBatchResult> AllowManyAsync(IReadOnlyList<WdacAllowFile> files, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(files);
+        if (files.Count == 0)
+        {
+            return new WdacBatchResult(true, string.Empty, Array.Empty<WdacFileAllowResult>(), null, null);
+        }
+
         await _policyGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (!File.Exists(request.ImagePath))
-            {
-                return WdacUpdateResult.Fail($"File not found: {request.ImagePath}");
-            }
-
             string? baseGuid = _options.BasePolicyGuid ?? await GetActiveBasePolicyGuidAsync(cancellationToken).ConfigureAwait(false);
             if (string.IsNullOrWhiteSpace(baseGuid) || baseGuid == EmptyGuid || !Guid.TryParseExact(baseGuid.Trim('{', '}'), "D", out _))
             {
-                return WdacUpdateResult.Fail(
+                return Fail(files,
                     "No valid active WDAC base policy found to attach the supplemental to. Deploy the base policy first "
                     + "(scripts/Deploy-WardenSpikePolicy.ps1 in the VM), or set WARDEN_WDAC_BASE_POLICY_GUID.");
             }
@@ -56,75 +86,119 @@ public sealed class WdacAllowlistManager : IWdacAllowlistManager
             Directory.CreateDirectory(_options.WorkDir);
             Directory.CreateDirectory(BackupDir);
             EnsureSupplementalSeeded();
-
             string? backupPath = BackupCurrent();
 
-            // Isolate the target file so New-CIPolicy hashes only it. The copy is what gets allow-listed,
-            // so verify it is byte-for-byte what the pipeline judged (defence against a swap between the
-            // decision and the deployment). No hash on the request means the caller could not hash the
-            // file at all — refuse rather than allow unknown bytes.
+            // Isolate the files so New-CIPolicy hashes only them. Each goes into its own numbered subfolder
+            // (same-named files must not collide) and the copy is what gets allow-listed, so a caller that
+            // supplied the judged hash gets a byte-for-byte check against a swap between judgement and
+            // deployment; an administrator's explicit choice is hashed as found and reported back.
             string scanDir = Path.Combine(_options.WorkDir, "scan");
             ResetDirectory(scanDir);
-            string scannedCopy = Path.Combine(scanDir, Path.GetFileName(request.ImagePath));
-            if (IsReparsePoint(request.ImagePath))
-            {
-                return WdacUpdateResult.Fail("Refusing to allow-list through a reparse point (symlink/junction).");
-            }
-            File.Copy(request.ImagePath, scannedCopy, overwrite: true);
 
-            string copiedSha = ComputeSha256(scannedCopy);
-            if (string.IsNullOrWhiteSpace(request.Sha256))
+            var results = new WdacFileAllowResult[files.Count];
+            var copies = new List<(int Index, string Copy, string Sha)>();
+            for (int i = 0; i < files.Count; i++)
             {
-                return WdacUpdateResult.Fail("No judged hash supplied; refusing to allow-list unverified bytes.");
-            }
-            if (!string.Equals(copiedSha, request.Sha256, StringComparison.OrdinalIgnoreCase))
-            {
-                _logger.LogError(
-                    "WDAC allow refused for {File}: file changed since inspection (judged {Judged}, found {Found}).",
-                    Path.GetFileName(request.ImagePath), request.Sha256, copiedSha);
-                return WdacUpdateResult.Fail("The file changed between inspection and deployment; allow refused.");
+                WdacAllowFile f = files[i];
+                string? error = null;
+                string? sha = null;
+                try
+                {
+                    if (string.IsNullOrWhiteSpace(f.Path) || !File.Exists(f.Path))
+                    {
+                        error = "File not found.";
+                    }
+                    else if (IsReparsePoint(f.Path))
+                    {
+                        error = "Refusing to allow-list through a reparse point (symlink/junction).";
+                    }
+                    else if (new FileInfo(f.Path).Length > MaxAllowFileBytes)
+                    {
+                        error = "File is larger than the allow-list size cap.";
+                    }
+                    else
+                    {
+                        string sub = Path.Combine(scanDir, i.ToString("D4", CultureInfo.InvariantCulture));
+                        Directory.CreateDirectory(sub);
+                        string copy = Path.Combine(sub, Path.GetFileName(f.Path));
+                        File.Copy(f.Path, copy, overwrite: true);
+                        sha = ComputeSha256(copy);
+                        if (!string.IsNullOrWhiteSpace(f.ExpectedSha256)
+                            && !string.Equals(sha, f.ExpectedSha256, StringComparison.OrdinalIgnoreCase))
+                        {
+                            _logger.LogError(
+                                "WDAC allow refused for {File}: file changed since it was judged (judged {Judged}, found {Found}).",
+                                Path.GetFileName(f.Path), f.ExpectedSha256, sha);
+                            error = "The file's bytes differ from the ones that were judged/recorded; not allow-listed.";
+                            Directory.Delete(sub, recursive: true);
+                        }
+                        else
+                        {
+                            copies.Add((i, copy, sha));
+                        }
+                    }
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    error = ex.Message;
+                }
+
+                results[i] = new WdacFileAllowResult(f.Path, sha, error is null, error);
             }
 
-            // Snapshot the rule set so the ledger can record exactly which rules this allow adds.
+            if (copies.Count == 0)
+            {
+                return new WdacBatchResult(false, string.Empty, results, backupPath, "No file could be allow-listed.");
+            }
+
+            // Snapshot the rule set so the ledger can record exactly which rules this batch adds.
             IReadOnlySet<string> before = SupplementalPolicyXml.AllowRuleIds(LoadXml(SupplementalXmlPath));
 
             string tmpHashXml = Path.Combine(_options.WorkDir, "_tmp_hash.xml");
             string mergedXml = Path.Combine(_options.WorkDir, "_tmp_merged.xml");
-
             string mergeScript = BuildMergeScript(SupplementalXmlPath, scanDir, tmpHashXml, mergedXml, baseGuid);
             ProcessResult ps = await _runner.RunPowerShellAsync(mergeScript, _options.Timeout, cancellationToken).ConfigureAwait(false);
             if (!ps.Ok)
             {
-                return WdacUpdateResult.Fail($"ConfigCI failed: {Trim(ps.StdErr)} {Trim(ps.StdOut)}");
+                return Fail(files, $"ConfigCI failed: {Trim(ps.StdErr)} {Trim(ps.StdOut)}", results);
             }
 
-            // Post-process in C#: guard the base linkage, record the new rules, bump the version.
             XDocument doc = LoadXml(SupplementalXmlPath);
             string? linkedBase = SupplementalPolicyXml.BasePolicyId(doc);
             if (string.IsNullOrWhiteSpace(linkedBase) || linkedBase == EmptyGuid)
             {
-                return WdacUpdateResult.Fail("BasePolicyID not set after linkage; refusing to compile an inert supplemental.");
+                return Fail(files, "BasePolicyID not set after linkage; refusing to compile an inert supplemental.", results);
             }
 
+            // Attribute the new rules to files: New-CIPolicy names each hash rule "<scanned path> Hash …",
+            // and every scanned copy sits in its own folder, so the copy path is a unique prefix.
             IReadOnlySet<string> after = SupplementalPolicyXml.AllowRuleIds(doc);
-            var added = after.Where(id => !before.Contains(id)).ToList();
+            var added = new HashSet<string>(after.Where(id => !before.Contains(id)), StringComparer.OrdinalIgnoreCase);
+            AllowRuleLedger ledger = AllowRuleLedger.Load(LedgerPath);
+            foreach ((int index, string copy, string sha) in copies)
+            {
+                var mine = SupplementalPolicyXml.AllowRuleIdsByFriendlyNamePrefix(doc, copy).Where(added.Contains).ToList();
+                ledger.Record(sha.ToUpperInvariant(), mine);
+                if (mine.Count == 0)
+                {
+                    _logger.LogWarning("No hash rules were generated for {File}; it may not be a PE image.", results[index].Path);
+                    results[index] = results[index] with { Success = false, Error = "ConfigCI produced no rules for this file (not a PE image?)." };
+                }
+            }
             string version = SupplementalPolicyXml.BumpVersion(doc);
             SaveXml(doc, SupplementalXmlPath);
-
-            AllowRuleLedger ledger = AllowRuleLedger.Load(LedgerPath);
-            ledger.Record(request.Sha256.ToUpperInvariant(), added);
             ledger.Save(LedgerPath);
 
             WdacUpdateResult deploy = await CompileAndDeployAsync(cancellationToken).ConfigureAwait(false);
             if (!deploy.Success)
             {
-                return deploy;
+                return Fail(files, deploy.Error ?? "Deployment failed.", results);
             }
 
             _logger.LogInformation(
-                "WDAC supplemental {Policy} v{Version} updated for {File} (+{Rules} rules).",
-                deploy.PolicyGuid, version, Path.GetFileName(request.ImagePath), added.Count);
-            return new WdacUpdateResult(true, $"hash:{request.Sha256}", deploy.PolicyGuid, backupPath, null);
+                "WDAC supplemental {Policy} v{Version} updated: +{Rules} rules for {Files} file(s).",
+                deploy.PolicyGuid, version, added.Count, copies.Count);
+            return new WdacBatchResult(true, deploy.PolicyGuid, results, backupPath, null);
         }
         catch (OperationCanceledException)
         {
@@ -132,12 +206,20 @@ public sealed class WdacAllowlistManager : IWdacAllowlistManager
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "WDAC AllowAsync failed for {File}", request.ImagePath);
-            return WdacUpdateResult.Fail(ex.Message);
+            _logger.LogError(ex, "WDAC AllowManyAsync failed.");
+            return Fail(files, ex.Message);
         }
         finally
         {
             _policyGate.Release();
+        }
+
+        static WdacBatchResult Fail(IReadOnlyList<WdacAllowFile> files, string error, WdacFileAllowResult[]? partial = null)
+        {
+            WdacFileAllowResult[] rows = partial is not null
+                ? partial.Select(r => r.Success ? r with { Success = false, Error = error } : r).ToArray()
+                : files.Select(f => new WdacFileAllowResult(f.Path, null, false, error)).ToArray();
+            return new WdacBatchResult(false, string.Empty, rows, null, error);
         }
     }
 
@@ -165,8 +247,7 @@ public sealed class WdacAllowlistManager : IWdacAllowlistManager
             {
                 // Rules recorded before the ledger existed: New-CIPolicy named them "<scan path> Hash …".
                 // Over-matching here only ever removes allows (fail-safe), never adds one.
-                string prefix = Path.Combine(_options.WorkDir, "scan", Path.GetFileName(imageName));
-                foreach (string id in SupplementalPolicyXml.AllowRuleIdsByFriendlyNamePrefix(doc, prefix))
+                foreach (string id in SupplementalPolicyXml.AllowRuleIdsByScannedFileName(doc, Path.GetFileName(imageName), Path.Combine(_options.WorkDir, "scan")))
                 {
                     ids.Add(id);
                 }

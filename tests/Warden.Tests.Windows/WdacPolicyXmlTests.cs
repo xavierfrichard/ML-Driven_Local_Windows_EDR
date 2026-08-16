@@ -64,6 +64,23 @@ public sealed class WdacPolicyXmlTests
     }
 
     [Fact]
+    public void Scanned_file_name_lookup_matches_flat_and_batch_layouts_under_the_scan_root()
+    {
+        XDocument doc = XDocument.Parse($$"""
+            <SiPolicy xmlns="{{Ns}}">
+              <FileRules>
+                <Allow ID="A" FriendlyName="C:\ProgramData\Warden\wdac\scan\tool.exe Hash Sha256" Hash="1" />
+                <Allow ID="B" FriendlyName="C:\ProgramData\Warden\wdac\scan\0007\tool.exe Hash Page Sha1" Hash="2" />
+                <Allow ID="C" FriendlyName="C:\ProgramData\Warden\wdac\scan\0008\other.exe Hash Sha256" Hash="3" />
+                <Allow ID="D" FriendlyName="C:\Elsewhere\tool.exe Hash Sha256" Hash="4" />
+              </FileRules>
+            </SiPolicy>
+            """);
+        IReadOnlySet<string> ids = SupplementalPolicyXml.AllowRuleIdsByScannedFileName(doc, "tool.exe", @"C:\ProgramData\Warden\wdac\scan");
+        Assert.Equal(new[] { "A", "B" }, ids.OrderBy(s => s));
+    }
+
+    [Fact]
     public void Version_bump_increments_the_revision_and_creates_a_missing_element()
     {
         XDocument doc = Sample();

@@ -107,6 +107,7 @@ public sealed partial class MgmtRequestHandler : IMgmtHandler
             MgmtOperations.FoldersDelete => await DeleteFolderAsync(id, request.PayloadJson, cancellationToken).ConfigureAwait(false),
             MgmtOperations.WhitelistAdd => await AddWhitelistAsync(id, request.PayloadJson, cancellationToken).ConfigureAwait(false),
             MgmtOperations.WhitelistSetAction => await SetWhitelistActionAsync(id, request.PayloadJson, cancellationToken).ConfigureAwait(false),
+            MgmtOperations.WhitelistAllowFile => await AllowFileAsync(id, request.PayloadJson, cancellationToken).ConfigureAwait(false),
             MgmtOperations.VulnAppSetFirewall => await SetFirewallAsync(id, request.PayloadJson, cancellationToken).ConfigureAwait(false),
 
             _ => MgmtResponse.Fail(id, "Unknown operation."),
@@ -210,8 +211,180 @@ public sealed partial class MgmtRequestHandler : IMgmtHandler
 
         long newId = await _rules.AddAsync(rule!, cancellationToken).ConfigureAwait(false);
         _logger.LogInformation("Mgmt: rule {Id} added ({Kind} {Action}).", newId, rule!.Kind, rule.Action);
-        return MgmtResponse.Success(id);
+
+        // An Allow rule only takes effect at the file's NEXT block otherwise (the pipeline consults rules
+        // when WDAC raises an event). For the two kinds where the files are knowable now, deploy the WDAC
+        // hash rules immediately so the user does not need a fail-then-relaunch cycle.
+        if (rule.Action == PolicyAction.Allow && rule.Kind == RuleKind.Folder && !rule.RequireSignature && !rule.RequireWhitelist)
+        {
+            return Message(id, await AllowFolderNowAsync(rule.MatchValue, newId, cancellationToken).ConfigureAwait(false));
+        }
+
+        if (rule.Action == PolicyAction.Allow && rule.Kind == RuleKind.Hash)
+        {
+            WhitelistEntry? known = await _whitelist.FindLatestBySha256Async(rule.MatchValue, cancellationToken).ConfigureAwait(false);
+            if (known is not null && File.Exists(known.ProcessPath))
+            {
+                WdacBatchResult batch = await _wdac.AllowManyAsync(
+                    new[] { new WdacAllowFile(known.ProcessPath, known.Sha256) }, cancellationToken).ConfigureAwait(false);
+                if (batch.Success && batch.Allowed == 1)
+                {
+                    await _whitelist.SetActionAsync(known.Id, PolicyAction.Allow, cancellationToken).ConfigureAwait(false);
+                    return Message(id, $"Rule added and WDAC allow rule deployed for {known.ProcessName}; relaunch the app.");
+                }
+                return Message(id, "Rule added, but the WDAC rule could not be deployed now (" + (batch.Error ?? batch.Files[0].Error) + "). It will apply on the file's next launch.");
+            }
+            return Message(id, "Rule added. It applies the next time a file with this hash is launched.");
+        }
+
+        return Message(id, rule.Action == PolicyAction.Allow
+            ? "Rule added. It applies the next time a matching file is launched (blocked → allowed on relaunch)."
+            : "Rule added.");
     }
+
+    /// <summary>
+    /// Allow-lists every PE file under a folder in one WDAC update and records a whitelist Allow row for
+    /// each, so a "Folder → Allow" rule is effective immediately rather than one failed launch per DLL.
+    /// </summary>
+    private async Task<string> AllowFolderNowAsync(string folder, long ruleId, CancellationToken cancellationToken)
+    {
+        if (!IsAcceptableLocalPath(folder, allowDriveRoot: false, out string canonical, out string? invalid))
+        {
+            return "Rule added; " + invalid;
+        }
+        if (!Directory.Exists(canonical))
+        {
+            return "Rule added. The folder does not exist yet; files will be allowed as they are launched.";
+        }
+
+        var candidates = new List<string>();
+        try
+        {
+            foreach (string f in Directory.EnumerateFiles(canonical, "*", SearchOption.AllDirectories))
+            {
+                if (candidates.Count >= MaxBulkAllowFiles)
+                {
+                    break;
+                }
+                if (IsPeCandidate(f))
+                {
+                    candidates.Add(f);
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _logger.LogWarning(ex, "Mgmt: enumerating {Folder} for bulk allow failed.", canonical);
+        }
+
+        if (candidates.Count == 0)
+        {
+            return "Rule added. No executable files were found under the folder; anything launched from it will be allowed on its next launch.";
+        }
+
+        WdacBatchResult batch = await _wdac.AllowManyAsync(
+            candidates.Select(c => new WdacAllowFile(c, null)).ToList(), cancellationToken).ConfigureAwait(false);
+
+        int recorded = 0;
+        foreach (WdacFileAllowResult r in batch.Files.Where(r => r.Success && r.Sha256 is not null))
+        {
+            await RecordAdminAllowAsync(r.Path, r.Sha256!, "Rules", ruleId, cancellationToken).ConfigureAwait(false);
+            recorded++;
+        }
+
+        if (!batch.Success)
+        {
+            _logger.LogError("Mgmt: bulk allow for {Folder} failed: {Error}", canonical, batch.Error);
+            return $"Rule added, but the WDAC deployment failed ({batch.Error}). Files will be allowed on their next launch.";
+        }
+
+        string more = candidates.Count >= MaxBulkAllowFiles ? $" (stopped at the {MaxBulkAllowFiles}-file cap; the rest are allowed on launch)" : string.Empty;
+        return $"Rule added and {recorded} file(s) allow-listed in WDAC now, {batch.Skipped} skipped{more}. Relaunch the app.";
+    }
+
+    private const int MaxBulkAllowFiles = 500;
+
+    private static readonly HashSet<string> PeExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".exe", ".dll", ".ocx", ".cpl", ".scr", ".com", ".drv", ".ax", ".efi", ".mui", ".node", ".pyd", ".winmd", ".arx", ".dbx", ".crx",
+    };
+
+    /// <summary>Extension on the PE list AND an "MZ" header (cheap, avoids scanning renamed data files).</summary>
+    private static bool IsPeCandidate(string path)
+    {
+        try
+        {
+            if (!PeExtensions.Contains(Path.GetExtension(path)))
+            {
+                return false;
+            }
+            var info = new FileInfo(path);
+            if ((info.Attributes & FileAttributes.ReparsePoint) != 0 || info.Length < 64)
+            {
+                return false;
+            }
+            using FileStream fs = info.OpenRead();
+            return fs.ReadByte() == 'M' && fs.ReadByte() == 'Z';
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    private async Task RecordAdminAllowAsync(string path, string sha256, string source, long? ruleId, CancellationToken cancellationToken)
+    {
+        long size = -1;
+        try { size = new FileInfo(path).Length; } catch (IOException) { } catch (UnauthorizedAccessException) { }
+        await _whitelist.AddAsync(new WhitelistEntry
+        {
+            Timestamp = DateTimeOffset.UtcNow,
+            Action = PolicyAction.Allow,
+            ProcessName = Path.GetFileName(path).ToLowerInvariant(),
+            ProcessPath = path,
+            Sha256 = sha256.ToUpperInvariant(),
+            FileSize = size,
+            Source = source,
+            RuleId = ruleId,
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// "Allow file…": an administrator picks a file; it is hash-allow-listed in WDAC immediately and recorded
+    /// as an Allow row (Source = Admin) so the whitelist tier replays it. The bytes present now are the
+    /// bytes allowed.
+    /// </summary>
+    private async Task<MgmtResponse> AllowFileAsync(Guid id, string? payload, CancellationToken cancellationToken)
+    {
+        if (!TryParse(payload, out AllowFilePayload? arg, out string? error))
+        {
+            return MgmtResponse.Fail(id, error);
+        }
+
+        if (!IsAcceptableLocalPath(arg!.Path, allowDriveRoot: false, out string canonical, out string? invalid))
+        {
+            return MgmtResponse.Fail(id, invalid!);
+        }
+        if (!File.Exists(canonical))
+        {
+            return MgmtResponse.Fail(id, "The file does not exist.");
+        }
+
+        WdacBatchResult batch = await _wdac.AllowManyAsync(new[] { new WdacAllowFile(canonical, null) }, cancellationToken).ConfigureAwait(false);
+        WdacFileAllowResult r = batch.Files[0];
+        if (!batch.Success || !r.Success || r.Sha256 is null)
+        {
+            _logger.LogError("Mgmt: allow-file failed for {Path}: {Error}", canonical, batch.Error ?? r.Error);
+            return MgmtResponse.Fail(id, "WDAC allow failed: " + (batch.Error ?? r.Error ?? "unknown error"));
+        }
+
+        await RecordAdminAllowAsync(canonical, r.Sha256, "Admin", null, cancellationToken).ConfigureAwait(false);
+        _logger.LogInformation("Mgmt: file allow-listed by administrator: {Sha} {Path}", r.Sha256, canonical);
+        return Message(id, $"{Path.GetFileName(canonical)} is now allowed (WDAC rule deployed). Relaunch the app.");
+    }
+
+    private static MgmtResponse Message(Guid id, string text) =>
+        MgmtResponse.Success(id, JsonSerializer.Serialize(new MgmtMessage(text), IpcProtocol.Json));
 
     private async Task<MgmtResponse> DeleteRuleAsync(Guid id, string? payload, CancellationToken cancellationToken)
     {
@@ -320,11 +493,34 @@ public sealed partial class MgmtRequestHandler : IMgmtHandler
                 _logger.LogError("Mgmt: WDAC revoke failed for {Sha}: {Error}", entry.Sha256, revoke.Error);
                 return MgmtResponse.Fail(id, "The WDAC allow rule could not be revoked; the entry was left unchanged. See the agent log.");
             }
+
+            await _whitelist.SetActionAsync(arg.Id, action, cancellationToken).ConfigureAwait(false);
+            _logger.LogInformation("Mgmt: whitelist entry {Id} set to Block (WDAC rule revoked).", arg.Id);
+            return Message(id, $"{entry.ProcessName} is blocked again (WDAC allow rule removed).");
         }
 
+        // Allow: deploy the WDAC rule NOW if the recorded file is still there with the recorded bytes;
+        // otherwise the row still flips and the pipeline deploys on the file's next block.
         await _whitelist.SetActionAsync(arg.Id, action, cancellationToken).ConfigureAwait(false);
         _logger.LogInformation("Mgmt: whitelist entry {Id} set to {Action}.", arg.Id, action);
-        return MgmtResponse.Success(id);
+
+        if (!IsSha256(entry.Sha256) || string.IsNullOrWhiteSpace(entry.ProcessPath) || !File.Exists(entry.ProcessPath))
+        {
+            return Message(id, $"{entry.ProcessName} set to Allow. The file is not at its recorded path, so the WDAC rule will be deployed on its next launch (blocked once, then allowed).");
+        }
+
+        WdacBatchResult batch = await _wdac.AllowManyAsync(
+            new[] { new WdacAllowFile(entry.ProcessPath, entry.Sha256) }, cancellationToken).ConfigureAwait(false);
+        WdacFileAllowResult r = batch.Files[0];
+        if (batch.Success && r.Success)
+        {
+            return Message(id, $"{entry.ProcessName} is now allowed (WDAC rule deployed). Relaunch the app.");
+        }
+
+        _logger.LogWarning("Mgmt: immediate WDAC allow for {Sha} failed: {Error}", entry.Sha256, batch.Error ?? r.Error);
+        return Message(id,
+            $"{entry.ProcessName} set to Allow, but the WDAC rule could not be deployed now: {batch.Error ?? r.Error}. "
+            + "If the file has changed since it was recorded, use 'Allow file…' to allow the current bytes.");
     }
 
     /// <summary>

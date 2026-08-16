@@ -36,6 +36,7 @@
                     <ToolBar DockPanel.Dock="Top">
                         <Button Content="Refresh" Click="RefreshWhitelist_Click" />
                         <Separator />
+                        <Button Content="Allow file…" Click="AllowFile_Click" Tag="mutation" ToolTip="Pick an executable or DLL: it is allow-listed in WDAC immediately and recorded here as Allow." />
                         <Button Content="Manual Add…" Click="AddWhitelist_Click" Tag="mutation" />
                         <Separator />
                         <Button Content="Set Allow" Click="WhitelistAllow_Click" Tag="mutation" />

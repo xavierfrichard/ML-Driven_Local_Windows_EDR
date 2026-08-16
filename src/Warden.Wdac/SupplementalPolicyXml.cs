@@ -58,6 +58,36 @@ public static class SupplementalPolicyXml
     }
 
     /// <summary>
+    /// IDs of <c>&lt;Allow&gt;</c> rules generated from a scanned copy named <paramref name="fileName"/> under
+    /// <paramref name="scanRoot"/> (any layout: <c>scan\name</c> or <c>scan\NNNN\name</c>). Legacy fallback for
+    /// rules recorded before the ledger existed; over-matching only ever removes allows.
+    /// </summary>
+    public static IReadOnlySet<string> AllowRuleIdsByScannedFileName(XDocument doc, string fileName, string scanRoot)
+    {
+        ArgumentNullException.ThrowIfNull(doc);
+        var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(fileName) || string.IsNullOrWhiteSpace(scanRoot))
+        {
+            return ids;
+        }
+
+        string root = scanRoot.TrimEnd('\\') + "\\";
+        string tail = "\\" + fileName + " Hash";
+        foreach (XElement allow in doc.Descendants(Ns + "FileRules").Elements(Ns + "Allow"))
+        {
+            string? id = (string?)allow.Attribute("ID");
+            string? name = (string?)allow.Attribute("FriendlyName");
+            if (!string.IsNullOrEmpty(id) && name is not null
+                && name.StartsWith(root, StringComparison.OrdinalIgnoreCase)
+                && name.Contains(tail, StringComparison.OrdinalIgnoreCase))
+            {
+                ids.Add(id);
+            }
+        }
+        return ids;
+    }
+
+    /// <summary>
     /// Removes the given <c>&lt;Allow&gt;</c> rules and every <c>&lt;FileRuleRef RuleID=…&gt;</c> that
     /// references them (under any signing scenario). Returns how many rule elements were removed.
     /// </summary>

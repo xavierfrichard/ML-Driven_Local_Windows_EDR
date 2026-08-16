@@ -302,13 +302,39 @@ public partial class MainWindow : Window
     {
         try
         {
-            await _client.InvokeAsync(operation, payload);
+            // The service may report what it actually did (e.g. "WDAC rule deployed; relaunch the app");
+            // prefer that over the generic caption so the user knows whether a relaunch is enough.
+            string? outcome = await _client.InvokeAsync(operation, payload);
             await reload();
-            Status(success);
+            Status(string.IsNullOrWhiteSpace(outcome) ? success : outcome);
         }
         catch (Exception ex)
         {
             Status(ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// "Allow file…": pick a blocked executable/DLL and allow it now — the service hash-allow-lists it in
+    /// WDAC immediately and records an Allow row, so no fail-then-relaunch cycle is needed.
+    /// </summary>
+    private async void AllowFile_Click(object sender, RoutedEventArgs e)
+    {
+        var dlg = new OpenFileDialog
+        {
+            Title = "Choose a file to allow",
+            Filter = "Executables and libraries (*.exe;*.dll;*.ocx;*.cpl;*.scr;*.arx;*.dbx)|*.exe;*.dll;*.ocx;*.cpl;*.scr;*.arx;*.dbx|All files (*.*)|*.*",
+            CheckFileExists = true,
+            Multiselect = true,
+        };
+        if (dlg.ShowDialog(this) != true)
+        {
+            return;
+        }
+
+        foreach (string file in dlg.FileNames)
+        {
+            await MutateAsync(MgmtOperations.WhitelistAllowFile, new AllowFilePayload(file), $"{System.IO.Path.GetFileName(file)} allowed.", LoadWhitelistAsync);
         }
     }
 

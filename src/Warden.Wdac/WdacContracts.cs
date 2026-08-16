@@ -14,6 +14,30 @@ namespace Warden.Wdac;
 /// <param name="PreferPublisher">Reserved; only per-file hash rules are produced today.</param>
 public sealed record WdacAllowRequest(string ImagePath, string Sha256, string? SignerSubject, bool PreferPublisher);
 
+/// <summary>One file in a batch allow request.</summary>
+/// <param name="Path">Full path of the file to allow-list.</param>
+/// <param name="ExpectedSha256">
+/// When set, the file is allow-listed only if its current bytes hash to this (the pipeline / whitelist
+/// path). When null the caller is an administrator explicitly choosing the file; the bytes present at that
+/// moment are hashed, allow-listed, and reported back so they can be recorded.
+/// </param>
+public sealed record WdacAllowFile(string Path, string? ExpectedSha256);
+
+/// <summary>Per-file outcome of a batch allow.</summary>
+public sealed record WdacFileAllowResult(string Path, string? Sha256, bool Success, string? Error);
+
+/// <summary>Outcome of a batch allow: the deployment result plus what happened to each file.</summary>
+public sealed record WdacBatchResult(
+    bool Success,
+    string PolicyGuid,
+    IReadOnlyList<WdacFileAllowResult> Files,
+    string? BackupPath,
+    string? Error)
+{
+    public int Allowed => Files.Count(f => f.Success);
+    public int Skipped => Files.Count(f => !f.Success);
+}
+
 /// <summary>Outcome of a supplemental-policy regeneration + deployment.</summary>
 public sealed record WdacUpdateResult(
     bool Success,
@@ -43,6 +67,15 @@ public interface IWdacAllowlistManager
 {
     /// <summary>Adds an allow for the file and deploys the updated supplemental (no reboot).</summary>
     Task<WdacUpdateResult> AllowAsync(WdacAllowRequest request, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Adds allows for several files in ONE policy update (one New-CIPolicy scan, one merge, one CiTool
+    /// deploy) — used by the management panel so an administrator's "allow this file" / "allow this
+    /// folder" takes effect immediately instead of on the file's next block. Files whose bytes do not
+    /// match their <see cref="WdacAllowFile.ExpectedSha256"/>, that are missing, reparse points or oversized
+    /// are reported as skipped; the rest are deployed.
+    /// </summary>
+    Task<WdacBatchResult> AllowManyAsync(IReadOnlyList<WdacAllowFile> files, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Removes the allow rules previously added for the file with this flat SHA-256 and deploys the

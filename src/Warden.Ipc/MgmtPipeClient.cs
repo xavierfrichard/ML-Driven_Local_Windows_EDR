@@ -87,10 +87,26 @@ public sealed class MgmtPipeClient : IDisposable
         }
     }
 
-    /// <summary>Issues a mutating operation. Throws <see cref="MgmtException"/> if the service refuses it.</summary>
-    public async Task InvokeAsync(string operation, object? payload, CancellationToken cancellationToken = default)
+    /// <summary>
+    /// Issues a mutating operation. Throws <see cref="MgmtException"/> if the service refuses it; returns
+    /// the service's outcome message when it supplied one (null otherwise).
+    /// </summary>
+    public async Task<string?> InvokeAsync(string operation, object? payload, CancellationToken cancellationToken = default)
     {
-        await SendAsync(operation, payload, cancellationToken).ConfigureAwait(false);
+        MgmtResponse response = await SendAsync(operation, payload, cancellationToken).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(response.PayloadJson))
+        {
+            return null;
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<MgmtMessage>(response.PayloadJson, IpcProtocol.Json)?.Text;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     private async Task<MgmtResponse> SendAsync(string operation, object? payload, CancellationToken cancellationToken)

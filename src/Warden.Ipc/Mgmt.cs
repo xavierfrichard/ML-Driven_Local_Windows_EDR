@@ -32,6 +32,7 @@ public static class MgmtOperations
     public const string FoldersDelete = "folders.delete";
     public const string WhitelistAdd = "whitelist.add";
     public const string WhitelistSetAction = "whitelist.setaction";
+    public const string WhitelistAllowFile = "whitelist.allowfile";
     public const string VulnAppSetFirewall = "vulnapp.setfirewall";
 
     /// <summary>The read-only operations — the only ones a non-elevated caller may issue.</summary>
@@ -61,6 +62,7 @@ public static class MgmtOperations
         FoldersDelete,
         WhitelistAdd,
         WhitelistSetAction,
+        WhitelistAllowFile,
         VulnAppSetFirewall,
     };
 
@@ -90,6 +92,12 @@ public sealed record MgmtResponse(Guid RequestId, bool Ok, string? Error, string
 
 /// <summary>Reply to <see cref="MgmtOperations.WhoAmI"/>: whether the caller may issue mutations.</summary>
 public sealed record WhoAmIPayload(bool IsAdministrator);
+
+/// <summary>Optional human-readable outcome of a mutation (e.g. "WDAC rule deployed; relaunch the app").</summary>
+public sealed record MgmtMessage(string Text);
+
+/// <summary>Argument for <see cref="MgmtOperations.WhitelistAllowFile"/>: allow one file by path, immediately.</summary>
+public sealed record AllowFilePayload(string Path);
 
 /// <summary>Argument payloads. Kept primitive so the wire format stays stable and UI-friendly.</summary>
 public sealed record SetActionPayload(long Id, int Action);
