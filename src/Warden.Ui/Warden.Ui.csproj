@@ -18,6 +18,9 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
+    <!-- requireAdministrator: the service's pipes admit only elevated callers and an "Allow" is honoured
+         only from an Administrators token; see app.manifest. -->
+    <ApplicationManifest>app.manifest</ApplicationManifest>
     <!-- CA1001 false positive: App disposes _pipeClient/_singleInstanceMutex/_trayIcon in OnExit,
          which the analyzer does not recognize as the WPF disposal path. -->
     <NoWarn>$(NoWarn);CA1001</NoWarn>

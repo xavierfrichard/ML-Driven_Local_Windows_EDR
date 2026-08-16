@@ -38,13 +38,28 @@ public sealed class OnnxScorer : IVerdictSource, IDisposable
         double score;
         try
         {
-            byte[] bytes = File.ReadAllBytes(context.ImagePath);
+            string path = context.BytesPath;
+            long length = new FileInfo(path).Length;
+            if (length > _options.MaxImageBytes)
+            {
+                // Refuse to load an attacker-sized file into memory (the extractor copies it again).
+                return new ValueTask<VerdictResult>(VerdictResult.Undecided(Kind, $"Image is {length} bytes; above the ML size cap."));
+            }
+
+            byte[] bytes = File.ReadAllBytes(path);
             if (!PeNet.PeFile.IsPeFile(bytes))
             {
                 return new ValueTask<VerdictResult>(VerdictResult.Undecided(Kind, "Not a PE image."));
             }
             float[] features = _extractor.Extract(bytes);
-            score = Score(session, features);
+            double? scored = Score(session, features);
+            if (scored is null)
+            {
+                // Unrecognized model output shape: say so — never fall back to a "most benign" 0.0.
+                _logger.LogWarning("ML model produced no recognizable probability output for {File}.", context.ImageName);
+                return new ValueTask<VerdictResult>(VerdictResult.Undecided(Kind, "ML model output not understood."));
+            }
+            score = Math.Clamp(scored.Value, 0d, 1d);
         }
         catch (Exception ex)
         {
@@ -69,7 +84,8 @@ public sealed class OnnxScorer : IVerdictSource, IDisposable
         return new ValueTask<VerdictResult>(VerdictResult.Undecided(Kind, $"ML score {score:F3} in mid-band; deferring."));
     }
 
-    private static double Score(InferenceSession session, float[] features)
+    /// <summary>The model's P(malicious), or null when no output of a known shape is present.</summary>
+    private static double? Score(InferenceSession session, float[] features)
     {
         string inputName = session.InputMetadata.Keys.First();
         var tensor = new DenseTensor<float>(features, new[] { 1, features.Length });
@@ -82,6 +98,10 @@ public sealed class OnnxScorer : IVerdictSource, IDisposable
             if (r.Value is Tensor<float> t)
             {
                 float[] arr = t.ToArray();
+                if (arr.Length == 0 || float.IsNaN(arr[^1]))
+                {
+                    return null;
+                }
                 return arr.Length >= 2 ? arr[^1] : arr[0];
             }
         }
@@ -92,14 +112,14 @@ public sealed class OnnxScorer : IVerdictSource, IDisposable
             if (r.Value is IEnumerable<IDictionary<long, float>> seq)
             {
                 IDictionary<long, float>? first = seq.FirstOrDefault();
-                if (first is not null && first.TryGetValue(1, out float p))
+                if (first is not null && first.TryGetValue(1, out float p) && !float.IsNaN(p))
                 {
                     return p;
                 }
             }
         }
 
-        return 0d;
+        return null;
     }
 
     private InferenceSession? LoadModel()
@@ -111,6 +131,21 @@ public sealed class OnnxScorer : IVerdictSource, IDisposable
                 _logger.LogInformation("ML model not found at {Path}; ML tier disabled.", _options.ModelPath);
                 return null;
             }
+
+            if (!string.IsNullOrWhiteSpace(_options.ModelSha256))
+            {
+                string actual;
+                using (FileStream fs = File.OpenRead(_options.ModelPath))
+                {
+                    actual = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(fs));
+                }
+                if (!string.Equals(actual, _options.ModelSha256.Trim(), StringComparison.OrdinalIgnoreCase))
+                {
+                    _logger.LogError("ML model {Path} does not match the pinned SHA-256; ML tier disabled.", _options.ModelPath);
+                    return null;
+                }
+            }
+
             var session = new InferenceSession(_options.ModelPath);
             _logger.LogInformation("Loaded ML model {Path} (version {Version}).", _options.ModelPath, _options.ModelVersion);
             return session;

@@ -1,5 +1,6 @@
 using System.Runtime.Versioning;
 using System.Security.AccessControl;
+using System.Security.Principal;
 using Microsoft.Extensions.Logging;
 
 namespace Warden.Hardening;
@@ -55,6 +56,59 @@ public sealed class DataDirectoryHardener
         {
             _logger.LogWarning(ex, "Could not lock down file {Path} (needs SYSTEM/Admin).", path);
             return false;
+        }
+    }
+
+    /// <summary>
+    /// Returns the well-known low-privilege principals (Everyone, Authenticated Users, Users, Interactive,
+    /// the current non-admin user) that hold a <b>write</b>-class allow ACE on the directory — i.e. who could
+    /// swap the binaries a LocalSystem service loads from it. Empty means "only privileged accounts can
+    /// write". Null when the DACL could not be read.
+    /// </summary>
+    public static IReadOnlyList<string>? LowPrivilegeWriters(string path)
+    {
+        try
+        {
+            const FileSystemRights writeClass =
+                FileSystemRights.WriteData | FileSystemRights.AppendData | FileSystemRights.CreateFiles
+                | FileSystemRights.CreateDirectories | FileSystemRights.Delete | FileSystemRights.DeleteSubdirectoriesAndFiles
+                | FileSystemRights.WriteAttributes | FileSystemRights.WriteExtendedAttributes | FileSystemRights.ChangePermissions
+                | FileSystemRights.TakeOwnership | FileSystemRights.FullControl | FileSystemRights.Write | FileSystemRights.Modify;
+
+            var lowPrivilege = new[]
+            {
+                WellKnownSidType.WorldSid,
+                WellKnownSidType.AuthenticatedUserSid,
+                WellKnownSidType.BuiltinUsersSid,
+                WellKnownSidType.InteractiveSid,
+                WellKnownSidType.BuiltinGuestsSid,
+                WellKnownSidType.AnonymousSid,
+            };
+
+            var offenders = new List<string>();
+            AuthorizationRuleCollection rules = new DirectoryInfo(path)
+                .GetAccessControl(AccessControlSections.Access)
+                .GetAccessRules(includeExplicit: true, includeInherited: true, typeof(System.Security.Principal.SecurityIdentifier));
+
+            foreach (FileSystemAccessRule rule in rules)
+            {
+                if (rule.AccessControlType != AccessControlType.Allow || (rule.FileSystemRights & writeClass) == 0)
+                {
+                    continue;
+                }
+
+                var sid = (System.Security.Principal.SecurityIdentifier)rule.IdentityReference;
+                if (lowPrivilege.Any(sid.IsWellKnown))
+                {
+                    offenders.Add(sid.Value);
+                }
+            }
+            return offenders;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException
+                                   or System.Security.Principal.IdentityNotMappedException)
+        {
+            return null;
         }
     }
 

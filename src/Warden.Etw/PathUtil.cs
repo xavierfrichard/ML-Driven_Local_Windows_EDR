@@ -33,7 +33,29 @@ public static class PathUtil
             return path;
         }
 
-        foreach ((string dos, string device) in DriveMap.Value)
+        string? mapped = TryMap(path, Volatile.Read(ref _driveMap) ?? RefreshDriveMap());
+        if (mapped is not null)
+        {
+            return mapped;
+        }
+
+        // Unknown device: a volume mounted after the map was built (USB, VHD, BitLocker unlock). Rebuild
+        // once (rate-limited) and retry, otherwise return the path unchanged.
+        if (ShouldRefresh())
+        {
+            mapped = TryMap(path, RefreshDriveMap());
+            if (mapped is not null)
+            {
+                return mapped;
+            }
+        }
+
+        return path;
+    }
+
+    private static string? TryMap(string path, IReadOnlyList<(string Dos, string Device)> map)
+    {
+        foreach ((string dos, string device) in map)
         {
             if (path.StartsWith(device, StringComparison.OrdinalIgnoreCase) &&
                 (path.Length == device.Length || path[device.Length] == '\\'))
@@ -41,13 +63,47 @@ public static class PathUtil
                 return dos + path.Substring(device.Length);
             }
         }
+        return null;
+    }
 
-        return path;
+    private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(30);
+    private static long _lastRefreshTicks;
+    private static List<(string Dos, string Device)>? _driveMap;
+
+    private static bool ShouldRefresh()
+    {
+        long now = Environment.TickCount64;
+        long last = Volatile.Read(ref _lastRefreshTicks);
+        return now - last >= (long)RefreshInterval.TotalMilliseconds;
+    }
+
+    private static List<(string Dos, string Device)> RefreshDriveMap()
+    {
+        Volatile.Write(ref _lastRefreshTicks, Environment.TickCount64);
+        List<(string Dos, string Device)> map = BuildDriveMap();
+        Volatile.Write(ref _driveMap, map);
+        return map;
     }
 
     /// <summary>
-    /// True if two image paths refer to the same file. Both sides are device-normalized first; if the
-    /// full paths still differ, falls back to a non-empty file-name match.
+    /// True only if two image paths are the same <b>full path</b> after device normalization. This is the
+    /// predicate to use for block↔process correlation: a file-name-only match would let a same-named decoy
+    /// started elsewhere lend its command line / parent / ancestry to the blocked file.
+    /// </summary>
+    public static bool PathsEqualStrict(string a, string b)
+    {
+        if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b))
+        {
+            return false;
+        }
+
+        return string.Equals(DevicePathToDosPath(a), DevicePathToDosPath(b), StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// True if two image paths <i>probably</i> refer to the same file: same normalized full path, or —
+    /// as a display-oriented fallback — the same non-empty file name. Do NOT use this for correlation
+    /// (see <see cref="PathsEqualStrict"/>).
     /// </summary>
     public static bool PathsEqual(string a, string b)
     {
@@ -74,7 +130,6 @@ public static class PathUtil
         catch (ArgumentException) { return string.Empty; }
     }
 
-    private static readonly Lazy<List<(string Dos, string Device)>> DriveMap = new(BuildDriveMap);
 
     private static List<(string Dos, string Device)> BuildDriveMap()
     {

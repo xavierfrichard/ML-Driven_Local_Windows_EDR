@@ -29,13 +29,15 @@ public static class ServiceCollectionExtensions
     /// </summary>
     public static IServiceCollection AddWardenLogging(this IServiceCollection services, string? logDirectory = null)
     {
-        string dir = logDirectory ?? Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Warden", "logs");
+        string dir = logDirectory ?? Warden.Core.WardenPaths.Under("logs");
         try { Directory.CreateDirectory(dir); } catch { /* best effort; Serilog falls back gracefully */ }
 
         services.AddSerilog(lc => lc
             .MinimumLevel.Information()
             .Enrich.FromLogContext()
+            // Attacker-controlled strings (paths, command lines, signer subjects) are logged constantly;
+            // escape control characters so they cannot forge lines in the security audit log.
+            .Enrich.With<ControlCharacterSanitizingEnricher>()
             .WriteTo.Console()
             .WriteTo.File(
                 Path.Combine(dir, "warden-.log"),

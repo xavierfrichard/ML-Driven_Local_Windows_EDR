@@ -3,10 +3,10 @@ using System.Text.Json.Serialization;
 
 namespace Warden.Ipc;
 
-/// <summary>The decision a user (or the auto-dismiss timeout) made at a prompt.</summary>
+/// <summary>The decision a user made at a prompt — or the fact that nobody did.</summary>
 public enum PromptDecision
 {
-    /// <summary>Default / timeout: leave the launch blocked (zero-trust safe default).</summary>
+    /// <summary>The user explicitly chose to keep the launch blocked; recorded so it is not asked again.</summary>
     KeepBlocked = 0,
 
     /// <summary>Allow the file: add a persistent WDAC allow rule so it runs on relaunch.</summary>
@@ -14,6 +14,12 @@ public enum PromptDecision
 
     /// <summary>Quarantine the file.</summary>
     Quarantine,
+
+    /// <summary>
+    /// Nobody answered (auto-dismiss, no UI connected, disconnect, service-side timeout). The OS block stands
+    /// (zero-trust safe default) but no decision is persisted, so the user is asked again next time.
+    /// </summary>
+    Timeout,
 }
 
 /// <summary>

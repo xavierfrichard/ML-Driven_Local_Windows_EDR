@@ -105,4 +105,29 @@ public sealed class DecisionPipelineTests
     {
         Assert.Throws<ArgumentNullException>(() => new DecisionPipeline(null!));
     }
+
+    /// <summary>
+    /// The composition root orders tiers by <c>(int)Kind</c>. A prior explicit decision (whitelist) must
+    /// outrank the automatic fast-allow (trust gate), or a user's "keep blocked" on a validly-signed file
+    /// would be re-allowed and overwritten on the next launch.
+    /// </summary>
+    [Fact]
+    public async Task Whitelist_block_outranks_the_trust_gates_allow_in_registration_order()
+    {
+        Assert.True((int)VerdictSourceKind.Rules < (int)VerdictSourceKind.Whitelist);
+        Assert.True((int)VerdictSourceKind.Whitelist < (int)VerdictSourceKind.TrustGate);
+
+        var whitelistBlock = StubSource.Deciding(VerdictSourceKind.Whitelist, Verdict.Block);
+        var trustAllow = StubSource.Deciding(VerdictSourceKind.TrustGate, Verdict.Allow);
+
+        // Register in the "wrong" textual order and sort the way Program.cs does.
+        var ordered = new IVerdictSource[] { trustAllow, whitelistBlock }.OrderBy(s => (int)s.Kind).ToList();
+        var pipeline = new DecisionPipeline(ordered);
+
+        var result = await pipeline.EvaluateAsync(TestData.Context());
+
+        Assert.Equal(Verdict.Block, result.Verdict);
+        Assert.Equal(VerdictSourceKind.Whitelist, result.Source);
+        Assert.False(trustAllow.WasEvaluated);
+    }
 }

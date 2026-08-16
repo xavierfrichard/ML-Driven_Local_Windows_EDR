@@ -199,6 +199,71 @@ public sealed class MgmtAuthorizationTests
         Assert.False(MgmtOperations.IsMutation(operation));
 
     [Fact]
-    public void An_unknown_operation_is_not_treated_as_a_mutation_or_silently_accepted() =>
-        Assert.False(MgmtOperations.IsMutation("something.invented"));
+    public void An_unknown_operation_is_default_deny_and_needs_elevation() =>
+        Assert.True(MgmtOperations.IsMutation("something.invented"));
+
+    [Fact]
+    public void Whoami_is_a_read() =>
+        Assert.True(MgmtOperations.IsRead(MgmtOperations.WhoAmI));
+}
+
+/// <summary>
+/// The whitelist upsert must never let an automatic tier's Allow overwrite a Block that a human (prompt,
+/// admin panel, rule) recorded — that is the "revoke stays revoked" property.
+/// </summary>
+public sealed class WhitelistAuthorityTests : IDisposable
+{
+    private readonly string _dbPath =
+        Path.Combine(Path.GetTempPath(), "warden-authority-" + Guid.NewGuid().ToString("N") + ".db");
+
+    public void Dispose()
+    {
+        SqliteConnection.ClearAllPools();
+        foreach (string suffix in new[] { "", "-wal", "-shm" })
+        {
+            try { File.Delete(_dbPath + suffix); } catch { /* best effort */ }
+        }
+    }
+
+    private static WhitelistEntry Entry(string sha, PolicyAction action, string source) => new()
+    {
+        Timestamp = DateTimeOffset.UtcNow,
+        Action = action,
+        ProcessName = "tool.exe",
+        ProcessPath = @"C:\apps\tool.exe",
+        Sha256 = sha,
+        Source = source,
+    };
+
+    [Fact]
+    public async Task An_automatic_allow_does_not_overwrite_a_users_block()
+    {
+        var db = new WardenDb(_dbPath);
+        db.Initialize();
+        var repo = new WhitelistRepository(db);
+
+        await repo.AddAsync(Entry("F00D", PolicyAction.Block, "UserPrompt"));
+        await repo.AddAsync(Entry("F00D", PolicyAction.Allow, "TrustGate"));   // automatic tier
+
+        WhitelistEntry? row = await repo.FindLatestBySha256Async("F00D");
+        Assert.NotNull(row);
+        Assert.Equal(PolicyAction.Block, row!.Action);
+        Assert.Equal("UserPrompt", row.Source);
+    }
+
+    [Fact]
+    public async Task A_human_allow_may_overwrite_a_human_block_and_automatic_rows_are_replaceable()
+    {
+        var db = new WardenDb(_dbPath);
+        db.Initialize();
+        var repo = new WhitelistRepository(db);
+
+        await repo.AddAsync(Entry("BEEF", PolicyAction.Block, "Admin"));
+        await repo.AddAsync(Entry("BEEF", PolicyAction.Allow, "UserPrompt"));  // a person changed their mind
+        Assert.Equal(PolicyAction.Allow, (await repo.FindLatestBySha256Async("BEEF"))!.Action);
+
+        await repo.AddAsync(Entry("CAFE", PolicyAction.Block, "VirusTotal"));
+        await repo.AddAsync(Entry("CAFE", PolicyAction.Allow, "TrustGate"));   // automatic over automatic is fine
+        Assert.Equal(PolicyAction.Allow, (await repo.FindLatestBySha256Async("CAFE"))!.Action);
+    }
 }

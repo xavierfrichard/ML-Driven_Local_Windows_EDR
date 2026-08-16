@@ -14,15 +14,25 @@ public sealed class WhitelistRepository : IWhitelistRepository
     public WhitelistRepository(IWardenDatabase db) => _db = db;
 
     /// <summary>
-    /// Records the decision for a file, replacing any previous decision for the same SHA-256.
-    /// Returns the row id of the (inserted or updated) entry.
+    /// Sources that represent an explicit human/administrative decision. An <b>automatic</b> Allow (trust
+    /// gate, reputation, ML, LLM, whitelist replay) may never overwrite a Block recorded by one of these;
+    /// see <see cref="AddAsync"/>.
+    /// </summary>
+    public static readonly IReadOnlySet<string> AuthoritativeSources =
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "UserPrompt", "Admin", "Rules" };
+
+    /// <summary>
+    /// Records the decision for a file, replacing any previous decision for the same SHA-256 — except that
+    /// an automatic Allow never overwrites an explicit human Block (the row is left untouched).
+    /// Returns the row id of the (inserted, updated or preserved) entry.
     /// </summary>
     public async Task<long> AddAsync(WhitelistEntry entry, CancellationToken cancellationToken = default)
     {
         await using var connection = _db.OpenConnection();
 
         // The conflict target repeats the index's COLLATE NOCASE so a hex-case difference in the hash
-        // updates the existing row instead of raising a constraint violation.
+        // updates the existing row instead of raising a constraint violation. The WHERE on the upsert is
+        // the "explicit Block wins over automatic Allow" guard (Action: 0 = Allow, 1 = Block).
         const string sql = """
             INSERT INTO whitelist
                 (Timestamp, Action, ProcessName, ProcessPath, Sha256, SignerSubject, SignerIssuer,
@@ -45,13 +55,26 @@ public sealed class WhitelistRepository : IWhitelistRepository
                 ParentName     = excluded.ParentName,
                 ParentPath     = excluded.ParentPath,
                 Source         = excluded.Source,
-                RuleId         = excluded.RuleId;
+                RuleId         = excluded.RuleId
+            WHERE NOT (whitelist.Action = 1
+                       AND whitelist.Source IN ('UserPrompt', 'Admin', 'Rules')
+                       AND excluded.Action = 0
+                       AND excluded.Source NOT IN ('UserPrompt', 'Admin', 'Rules'));
 
             SELECT Id FROM whitelist WHERE Sha256 = @Sha256 COLLATE NOCASE LIMIT 1;
             """;
 
         return await connection.ExecuteScalarAsync<long>(
             new CommandDefinition(sql, entry, cancellationToken: cancellationToken)).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    public async Task<WhitelistEntry?> GetByIdAsync(long id, CancellationToken cancellationToken = default)
+    {
+        await using var connection = _db.OpenConnection();
+        return await connection.QueryFirstOrDefaultAsync<WhitelistEntry>(
+            new CommandDefinition("SELECT * FROM whitelist WHERE Id = @id;", new { id }, cancellationToken: cancellationToken))
+            .ConfigureAwait(false);
     }
 
     /// <summary>

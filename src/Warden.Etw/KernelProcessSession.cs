@@ -15,6 +15,7 @@ public sealed class KernelProcessSession : IProcessStartSource
 {
     private const string SessionName = "Warden-KernelProc";
 
+    private const int MaxTrackedElevations = 4096;
     private readonly ConcurrentDictionary<int, bool> _elevationByPid = new();
     private TraceEventSession? _session;
     private Thread? _pump;
@@ -98,6 +99,16 @@ public sealed class KernelProcessSession : IProcessStartSource
         if (elevated is not null && int.TryParse(elevated.ToString(), out int flag))
         {
             _elevationByPid[data.ProcessID] = flag != 0;
+
+            // Bound the map: a manifest event without a matching kernel ProcessStart would otherwise leak
+            // an entry for the process lifetime. Drop arbitrary entries once past the cap (best-effort hint).
+            if (_elevationByPid.Count > MaxTrackedElevations)
+            {
+                foreach (int pid in _elevationByPid.Keys.Take(_elevationByPid.Count - MaxTrackedElevations))
+                {
+                    _elevationByPid.TryRemove(pid, out _);
+                }
+            }
         }
     }
 

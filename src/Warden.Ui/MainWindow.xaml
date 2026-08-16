@@ -36,10 +36,10 @@
                     <ToolBar DockPanel.Dock="Top">
                         <Button Content="Refresh" Click="RefreshWhitelist_Click" />
                         <Separator />
-                        <Button Content="Manual Add…" Click="AddWhitelist_Click" />
+                        <Button Content="Manual Add…" Click="AddWhitelist_Click" Tag="mutation" />
                         <Separator />
-                        <Button Content="Set Allow" Click="WhitelistAllow_Click" />
-                        <Button Content="Set Block" Click="WhitelistBlock_Click" />
+                        <Button Content="Set Allow" Click="WhitelistAllow_Click" Tag="mutation" />
+                        <Button Content="Set Block (revoke)" Click="WhitelistBlock_Click" Tag="mutation" ToolTip="Removes the WDAC allow rule for this file and records a Block, so it is blocked again on its next launch." />
                         <TextBlock VerticalAlignment="Center" Margin="8,0,0,0" Foreground="Gray"
                                    Text="One row per SHA-256 — Set Block revokes a previously allowed file." />
                     </ToolBar>
@@ -68,8 +68,8 @@
                     <ToolBar DockPanel.Dock="Top">
                         <Button Content="Refresh" Click="RefreshUserLog_Click" />
                         <Separator />
-                        <Button Content="Set Allow" Click="UserLogAllow_Click" />
-                        <Button Content="Set Block" Click="UserLogBlock_Click" />
+                        <Button Content="Set Allow" Click="UserLogAllow_Click" Tag="mutation" />
+                        <Button Content="Set Block (revoke)" Click="UserLogBlock_Click" Tag="mutation" ToolTip="Removes the WDAC allow rule for this file and records a Block, so it is blocked again on its next launch." />
                     </ToolBar>
                     <DataGrid x:Name="UserLogGrid" />
                 </DockPanel>
@@ -81,8 +81,8 @@
                     <ToolBar DockPanel.Dock="Top">
                         <Button Content="Refresh" Click="RefreshRules_Click" />
                         <Separator />
-                        <Button Content="Add…" Click="AddRule_Click" />
-                        <Button Content="Delete selected" Click="DeleteRule_Click" />
+                        <Button Content="Add…" Click="AddRule_Click" Tag="mutation" />
+                        <Button Content="Delete selected" Click="DeleteRule_Click" Tag="mutation" />
                     </ToolBar>
                     <DataGrid x:Name="RulesGrid" />
                 </DockPanel>
@@ -124,8 +124,8 @@
                     <ToolBar DockPanel.Dock="Top">
                         <Button Content="Refresh" Click="RefreshFolders_Click" />
                         <Separator />
-                        <Button Content="Add folder…" Click="AddFolder_Click" />
-                        <Button Content="Delete selected" Click="DeleteFolder_Click" />
+                        <Button Content="Add folder…" Click="AddFolder_Click" Tag="mutation" />
+                        <Button Content="Delete selected" Click="DeleteFolder_Click" Tag="mutation" />
                     </ToolBar>
                     <DataGrid x:Name="FoldersGrid" />
                 </DockPanel>

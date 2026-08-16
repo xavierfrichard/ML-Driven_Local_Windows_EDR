@@ -144,16 +144,22 @@ public sealed class ReputationCacheRepository : IReputationCacheRepository
     private readonly IWardenDatabase _db;
     public ReputationCacheRepository(IWardenDatabase db) => _db = db;
 
+    // The key is a BINARY-collated TEXT PRIMARY KEY, so both sides normalize the hash to upper case: that
+    // keeps the lookup on the index (a COLLATE NOCASE comparison would bypass it) and prevents the same hash
+    // existing twice in different letter cases.
     public async Task<ReputationRecord?> GetAsync(string sha256, CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(sha256);
         await using var c = _db.OpenConnection();
         return await c.QueryFirstOrDefaultAsync<ReputationRecord>(
-            new CommandDefinition("SELECT * FROM reputation_cache WHERE Sha256 = @sha256 COLLATE NOCASE;", new { sha256 }, cancellationToken: cancellationToken))
+            new CommandDefinition("SELECT * FROM reputation_cache WHERE Sha256 = @sha256;", new { sha256 = sha256.ToUpperInvariant() }, cancellationToken: cancellationToken))
             .ConfigureAwait(false);
     }
 
     public async Task UpsertAsync(ReputationRecord record, CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(record);
+        record = record with { Sha256 = record.Sha256.ToUpperInvariant() };
         await using var c = _db.OpenConnection();
         const string sql = """
             INSERT INTO reputation_cache (Sha256, VtPositives, VtTotal, VtFirstSeen, CachedTs, TtlSecs)

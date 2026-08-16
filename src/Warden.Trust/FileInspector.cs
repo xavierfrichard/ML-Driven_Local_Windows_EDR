@@ -1,5 +1,8 @@
+using System.Runtime.Versioning;
+using System.Security.AccessControl;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using System.Security.Principal;
 using Warden.Core;
 
 namespace Warden.Trust;
@@ -10,8 +13,25 @@ namespace Warden.Trust;
 /// non-NTFS volume, or otherwise unreadable — the enforcement controller calls this on every block and
 /// must never fault.
 /// </summary>
+[SupportedOSPlatform("windows")]
 public sealed class FileInspector : IFileInspector
 {
+    /// <summary>Extended-key-usage OID for code signing (id-kp-codeSigning).</summary>
+    private const string CodeSigningEku = "1.3.6.1.5.5.7.3.3";
+
+    /// <summary>NT SERVICE\TrustedInstaller — owner of most in-box Windows binaries.</summary>
+    private static readonly SecurityIdentifier TrustedInstallerSid =
+        new("S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464");
+
+    private readonly HashSet<string> _microsoftRoots;
+
+    /// <summary>Creates an inspector; the options supply the pinned Microsoft root thumbprints.</summary>
+    public FileInspector(TrustGateOptions? options = null)
+    {
+        IEnumerable<string> roots = options?.MicrosoftRootThumbprints ?? new TrustGateOptions().MicrosoftRootThumbprints;
+        _microsoftRoots = new HashSet<string>(roots.Select(Normalize), StringComparer.Ordinal);
+    }
+
     /// <summary>
     /// Computes the <b>flat file</b> SHA-256 (digest of every byte). This is deliberately NOT the
     /// Authenticode hash WDAC reports in <c>SHA256 Hash</c>: for a signed PE the two differ because
@@ -40,46 +60,91 @@ public sealed class FileInspector : IFileInspector
     }
 
     /// <summary>
-    /// Reads the embedded Authenticode leaf certificate and builds a chain to decide validity and
-    /// whether it chains to Microsoft. Returns <see cref="SignerInfo.Unsigned"/> for unsigned files
-    /// and — a known limitation — for catalog-signed files (most in-box Windows binaries), which
-    /// <see cref="X509Certificate.CreateFromSignedFile"/> cannot see. A later tier should use WinVerifyTrust.
+    /// Reads and <b>verifies</b> the embedded Authenticode signature. Three independent checks feed
+    /// <see cref="SignerInfo.IsValid"/>: (1) <see cref="AuthenticodeVerifier"/> (WinVerifyTrust) confirms
+    /// the signature digest matches this file's bytes and the chain is trusted; (2) an <see cref="X509Chain"/>
+    /// built with the code-signing usage confirms the leaf is a code-signing certificate; (3) the chain's
+    /// root thumbprint is compared against the pinned Microsoft roots for <see cref="SignerInfo.IsMicrosoft"/>.
+    /// A certificate that was merely copied into the file (a "borrowed" signature) fails (1) with
+    /// TRUST_E_BAD_DIGEST and is reported as signed-but-invalid — never trusted.
     /// </summary>
+    /// <remarks>
+    /// Returns <see cref="SignerInfo.Unsigned"/> for unsigned files and — a known limitation — for
+    /// catalog-signed files (most in-box Windows binaries), which have no embedded signature.
+    /// </remarks>
     public SignerInfo ReadSigner(string path)
     {
+        X509Certificate2 leaf;
         try
         {
-            using var leaf = new X509Certificate2(X509Certificate.CreateFromSignedFile(path));
+            leaf = new X509Certificate2(X509Certificate.CreateFromSignedFile(path));
+        }
+        catch (CryptographicException) { return SignerInfo.Unsigned; }  // unsigned or catalog-only
+        catch (IOException) { return SignerInfo.Unsigned; }
+        catch (UnauthorizedAccessException) { return SignerInfo.Unsigned; }
 
-            bool valid;
-            bool chainsToMicrosoft;
+        using (leaf)
+        {
+            // (1) Does the signature actually cover this file? This is the check the old code lacked.
+            AuthenticodeVerification verification;
+            try
+            {
+                verification = AuthenticodeVerifier.VerifyEmbeddedSignature(path);
+            }
+            catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException or IOException)
+            {
+                verification = new AuthenticodeVerification(false, unchecked((int)0x80004005)); // E_FAIL
+            }
+
+            // (2) Chain with the code-signing usage. Revocation is handled (best-effort, cache-only) by
+            // WinVerifyTrust above; here we only need the chain shape and its root.
+            bool chainOk;
+            string? rootThumbprint = null;
             using (var chain = new X509Chain())
             {
-                chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck; // offline VM friendly
-                valid = chain.Build(leaf);
-                chainsToMicrosoft = chain.ChainElements
-                    .Cast<X509ChainElement>()
-                    .Any(el => el.Certificate.Subject.Contains("Microsoft", StringComparison.OrdinalIgnoreCase));
+                chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+                chain.ChainPolicy.ApplicationPolicy.Add(new Oid(CodeSigningEku));
+                // Signing certificates routinely expire after the file was signed; WinVerifyTrust honours the
+                // timestamp for that. Mirror it here so an expired-but-timestamped signature is not rejected
+                // by this secondary chain check.
+                chain.ChainPolicy.VerificationFlags = X509VerificationFlags.IgnoreNotTimeValid;
+                try
+                {
+                    chainOk = chain.Build(leaf);
+                    if (chain.ChainElements.Count > 0)
+                    {
+                        rootThumbprint = Normalize(chain.ChainElements[^1].Certificate.Thumbprint);
+                    }
+                }
+                catch (CryptographicException)
+                {
+                    chainOk = false;
+                }
             }
 
-            // Fall back to a subject-string heuristic if the chain could not be built offline.
-            if (!chainsToMicrosoft)
-            {
-                chainsToMicrosoft =
-                    leaf.Subject.Contains("Microsoft", StringComparison.OrdinalIgnoreCase) ||
-                    leaf.Issuer.Contains("Microsoft", StringComparison.OrdinalIgnoreCase);
-            }
+            bool valid = verification.Verified && chainOk;
+
+            // (3) "Microsoft" means the verified chain ends in one of Microsoft's own product roots. No
+            // subject-string heuristics: a self-signed "CN=Microsoft Corporation" is not Microsoft.
+            bool isMicrosoft = valid && rootThumbprint is not null && _microsoftRoots.Contains(rootThumbprint);
+
+            string? cn;
+            try { cn = leaf.GetNameInfo(X509NameType.SimpleName, forIssuer: false); }
+            catch (CryptographicException) { cn = null; }
 
             return new SignerInfo(
                 IsSigned: true,
                 IsValid: valid,
                 SubjectName: leaf.Subject,
                 IssuerName: leaf.Issuer,
-                Thumbprint: leaf.Thumbprint, // uppercase hex per X509Certificate2
-                IsMicrosoft: chainsToMicrosoft);
+                Thumbprint: Normalize(leaf.Thumbprint),
+                IsMicrosoft: isMicrosoft)
+            {
+                SubjectCommonName = string.IsNullOrWhiteSpace(cn) ? null : cn,
+                RootThumbprint = rootThumbprint,
+                VerificationStatus = verification.Status,
+            };
         }
-        catch (CryptographicException) { return SignerInfo.Unsigned; }  // unsigned or catalog-only
-        catch (IOException) { return SignerInfo.Unsigned; }
     }
 
     /// <summary>
@@ -121,4 +186,29 @@ public sealed class FileInspector : IFileInspector
         catch (IOException) { return VerdictContext.NoMotw; }                // e.g. non-NTFS volume
         catch (UnauthorizedAccessException) { return VerdictContext.NoMotw; }
     }
+
+    /// <inheritdoc />
+    public bool IsOwnedByPrivilegedAccount(string path)
+    {
+        try
+        {
+            FileSecurity acl = new FileInfo(path).GetAccessControl(AccessControlSections.Owner);
+            if (acl.GetOwner(typeof(SecurityIdentifier)) is not SecurityIdentifier owner)
+            {
+                return false;
+            }
+
+            return owner.IsWellKnown(WellKnownSidType.LocalSystemSid)
+                || owner.IsWellKnown(WellKnownSidType.BuiltinAdministratorsSid)
+                || owner.Equals(TrustedInstallerSid);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException
+                                   or System.Security.SecurityException or IdentityNotMappedException)
+        {
+            return false;
+        }
+    }
+
+    private static string Normalize(string thumbprint) =>
+        thumbprint.Replace(" ", string.Empty, StringComparison.Ordinal).ToUpperInvariant();
 }

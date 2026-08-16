@@ -7,15 +7,13 @@ public sealed class HardeningOptions
     public string ServiceName { get; set; } = "WardenAgent";
 
     /// <summary>The agent's on-disk data directory (database, quarantine, logs).</summary>
-    public string DataDirectory { get; set; } = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Warden");
+    public string DataDirectory { get; set; } = Warden.Core.WardenPaths.DataDirectory;
 
     /// <summary>The database file to lock down. Defaults to <c>&lt;DataDirectory&gt;\warden.db</c>.</summary>
     public string? DatabasePath { get; set; }
 
     /// <summary>The log directory (Serilog rolling files).</summary>
-    public string LogDirectory { get; set; } = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Warden", "logs");
+    public string LogDirectory { get; set; } = Warden.Core.WardenPaths.Under("logs");
 
     /// <summary>
     /// Apply the data-directory / database ACL lockdown when the service starts. <b>Off by default</b> so

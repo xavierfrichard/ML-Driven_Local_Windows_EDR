@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
+using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
 using Warden.Ipc;
@@ -13,10 +14,16 @@ namespace Warden.Ui;
 /// and writes back a <see cref="PromptResponse"/>. The service may start after the UI, so the client
 /// reconnects with capped exponential backoff and survives pipe drops.
 /// </summary>
+/// <remarks>
+/// Connects at <see cref="TokenImpersonationLevel.Identification"/> (the service only needs to <i>identify</i>
+/// the caller for its Administrators check; a rogue server must never be able to impersonate the elevated
+/// UI) and refuses a pipe whose owner is not SYSTEM/Administrators/the current user.
+/// </remarks>
 public sealed class PromptPipeClient : IAsyncDisposable
 {
     private static readonly TimeSpan InitialBackoff = TimeSpan.FromMilliseconds(500);
     private static readonly TimeSpan MaxBackoff = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(30);
 
     private readonly CancellationTokenSource _cts = new();
     private Task? _loop;
@@ -24,7 +31,7 @@ public sealed class PromptPipeClient : IAsyncDisposable
     /// <summary>
     /// Handler invoked (off the pipe thread) for each request. Implementations should marshal to the
     /// UI thread and return the user's decision. If null, the client answers
-    /// <see cref="PromptDecision.KeepBlocked"/> so the service still fails safe.
+    /// <see cref="PromptDecision.Timeout"/> so the service still fails safe.
     /// </summary>
     public Func<PromptRequest, CancellationToken, Task<PromptDecision>>? PromptHandler { get; set; }
 
@@ -46,6 +53,10 @@ public sealed class PromptPipeClient : IAsyncDisposable
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 break;
+            }
+            catch (TimeoutException)
+            {
+                // Service not up yet; keep waiting quietly.
             }
             catch (Exception ex)
             {
@@ -72,13 +83,20 @@ public sealed class PromptPipeClient : IAsyncDisposable
             ".",
             IpcProtocol.PipeName,
             PipeDirection.InOut,
-            PipeOptions.Asynchronous);
+            PipeOptions.Asynchronous,
+            TokenImpersonationLevel.Identification);
 
-        // ConnectAsync waits until the server pipe exists, which handles UI-before-service startup.
-        await pipe.ConnectAsync(cancellationToken).ConfigureAwait(false);
+        // Bounded connect so a squatted/hung pipe cannot park the client forever; the outer loop retries.
+        await pipe.ConnectAsync((int)ConnectTimeout.TotalMilliseconds, cancellationToken).ConfigureAwait(false);
 
-        using var reader = new StreamReader(pipe, Encoding.UTF8, detectEncodingFromByteOrderMarks: false);
-        using var writer = new StreamWriter(pipe, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false))
+        if (OperatingSystem.IsWindows() && !PipeGuard.ServerLooksLegitimate(pipe))
+        {
+            Trace.TraceWarning("[Warden.Ui] Prompt pipe is not owned by the Warden service; refusing to answer prompts on it.");
+            return;
+        }
+
+        var reader = new BoundedLineReader(pipe);
+        using var writer = new StreamWriter(pipe, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false), leaveOpen: true)
         {
             AutoFlush = true,
         };
@@ -116,7 +134,7 @@ public sealed class PromptPipeClient : IAsyncDisposable
         Func<PromptRequest, CancellationToken, Task<PromptDecision>>? handler = PromptHandler;
         if (handler is null)
         {
-            return PromptDecision.KeepBlocked;
+            return PromptDecision.Timeout;
         }
 
         try
@@ -125,9 +143,9 @@ public sealed class PromptPipeClient : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            // Never let a UI failure propagate onto the pipe loop; fail safe.
+            // Never let a UI failure propagate onto the pipe loop; fail safe (unanswered).
             Trace.TraceWarning($"[Warden.Ui] Prompt handler failed: {ex.Message}");
-            return PromptDecision.KeepBlocked;
+            return PromptDecision.Timeout;
         }
     }
 

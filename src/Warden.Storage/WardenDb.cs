@@ -15,13 +15,11 @@ public sealed class WardenDb : IWardenDatabase
     }
 
     /// <param name="databasePath">
-    /// Explicit database path (used by tests). When null, defaults to %ProgramData%\Warden\warden.db.
+    /// Explicit database path (used by tests). When null, defaults to &lt;WardenPaths.DataDirectory&gt;\warden.db.
     /// </param>
     public WardenDb(string? databasePath)
     {
-        DatabasePath = databasePath ?? Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-            "Warden", "warden.db");
+        DatabasePath = databasePath ?? Path.Combine(Warden.Core.WardenPaths.DataDirectory, "warden.db");
     }
 
     public string DatabasePath { get; }
@@ -30,13 +28,23 @@ public sealed class WardenDb : IWardenDatabase
     {
         DataSource = DatabasePath,
         Mode = SqliteOpenMode.ReadWriteCreate,
-        Cache = SqliteCacheMode.Shared,
+        // Private cache: shared-cache + WAL is a documented footgun (table-level SQLITE_LOCKED between
+        // threads). Concurrency comes from WAL + busy_timeout instead.
+        Cache = SqliteCacheMode.Private,
     }.ToString();
 
+    /// <summary>
+    /// Opens a connection with the per-connection PRAGMAs applied: <c>busy_timeout</c> (the enforcement
+    /// loop, the management handler and the process-tree writer all write concurrently, so a writer must
+    /// wait rather than fail with SQLITE_BUSY) and <c>foreign_keys</c> (per-connection in SQLite).
+    /// </summary>
     public SqliteConnection OpenConnection()
     {
         var connection = new SqliteConnection(ConnectionString);
         connection.Open();
+        using var pragma = connection.CreateCommand();
+        pragma.CommandText = "PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;";
+        pragma.ExecuteNonQuery();
         return connection;
     }
 
@@ -47,7 +55,7 @@ public sealed class WardenDb : IWardenDatabase
 
         using (var pragma = connection.CreateCommand())
         {
-            pragma.CommandText = "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;";
+            pragma.CommandText = "PRAGMA journal_mode=WAL;";
             pragma.ExecuteNonQuery();
         }
 
@@ -57,9 +65,16 @@ public sealed class WardenDb : IWardenDatabase
             cmd.ExecuteNonQuery();
         }
 
-        using var migrate = connection.CreateCommand();
-        migrate.CommandText = Migrations;
-        migrate.ExecuteNonQuery();
+        // Migrations are destructive (they collapse rows) — run them atomically so a failure part-way
+        // through cannot leave the table de-duplicated but without its uniqueness guarantee.
+        using var tx = connection.BeginTransaction();
+        using (var migrate = connection.CreateCommand())
+        {
+            migrate.Transaction = tx;
+            migrate.CommandText = Migrations;
+            migrate.ExecuteNonQuery();
+        }
+        tx.Commit();
     }
 
     /// <summary>

@@ -31,6 +31,7 @@ public partial class MainWindow : Window
 
     private async Task LoadAllAsync()
     {
+        await RefreshPrivilegeAsync();
         await LoadWhitelistAsync();
         await LoadUserLogAsync();
         await LoadRulesAsync();
@@ -42,6 +43,56 @@ public partial class MainWindow : Window
         await LoadWebAppsAsync();
         await LoadTamperAsync();
         Status("Loaded. Right-click the tray icon and choose Open Warden any time.");
+    }
+
+    /// <summary>
+    /// Asks the service whether this connection is elevated and greys out every mutating control when it is
+    /// not, so the answer is visible up front instead of as a refusal after each click.
+    /// </summary>
+    private async Task RefreshPrivilegeAsync()
+    {
+        bool isAdmin;
+        try
+        {
+            isAdmin = await _client.IsAdministratorAsync();
+        }
+        catch (Exception ex)
+        {
+            Status(ex.Message);
+            isAdmin = false;
+        }
+
+        foreach (Button b in FindMutationButtons(this))
+        {
+            b.IsEnabled = isAdmin;
+            b.ToolTip ??= isAdmin ? null : MgmtProtocol.ElevationRequired;
+        }
+
+        if (!isAdmin)
+        {
+            Status(MgmtProtocol.ElevationRequired);
+        }
+    }
+
+    // Logical (not visual) tree walk: a TabControl only realizes the selected tab's visuals, but every
+    // tab's content is a logical child, so this finds the buttons on unselected tabs too.
+    private static IEnumerable<Button> FindMutationButtons(DependencyObject root)
+    {
+        foreach (object child in LogicalTreeHelper.GetChildren(root))
+        {
+            if (child is not DependencyObject dep)
+            {
+                continue;
+            }
+            if (dep is Button { Tag: "mutation" } b)
+            {
+                yield return b;
+            }
+            foreach (Button nested in FindMutationButtons(dep))
+            {
+                yield return nested;
+            }
+        }
     }
 
     // ---- per-panel loads --------------------------------------------------------------------------
@@ -186,7 +237,8 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// Flips the selected entry between Allow and Block. Setting Block revokes a previously-allowed
-    /// file: the whitelist tier replays that decision for the hash on the next launch.
+    /// file: the service removes the WDAC allow rule for the hash first (so the OS blocks the next launch
+    /// again) and only then records the Block, which the whitelist tier replays.
     /// </summary>
     private async Task SetWhitelistActionAsync(DataGrid grid, PolicyAction action, Func<Task> reload)
     {

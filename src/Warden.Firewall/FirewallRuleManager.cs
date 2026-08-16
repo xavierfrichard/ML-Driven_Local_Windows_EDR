@@ -68,37 +68,66 @@ public sealed class FirewallRuleManager : IFirewallRuleManager
 
     public IReadOnlyList<FirewallRuleSpec> SetBlocked(string appPath, bool inbound, bool outbound)
     {
-        // Rebuild from scratch so the resulting rule set always matches the requested state exactly.
-        UnblockApp(appPath);
-
-        if (!inbound && !outbound)
-        {
-            return Array.Empty<FirewallRuleSpec>();
-        }
-
+        // Fail-closed ordering: create the wanted rules FIRST (with a temporary suffix so they never
+        // collide with the ones being replaced), and only once they exist remove the old ones and rename.
+        // Removing first would leave a window — or, on a creation failure, a permanent state — with no
+        // block in place while the panel still shows one.
         var wanted = FirewallRuleSpecs.BlockBoth(appPath)
             .Where(s => s.Direction == FirewallDirection.Inbound ? inbound : outbound)
             .ToList();
 
+        const string pendingSuffix = " (pending)";
         dynamic policy = CreatePolicy();
-        foreach (FirewallRuleSpec spec in wanted)
+        var created = new List<string>();
+        try
         {
-            dynamic rule = CreateRuleObject();
-            rule.Name = spec.RuleName;
-            rule.Description = "Created by the Warden zero-trust agent.";
-            rule.ApplicationName = spec.AppPath;
-            rule.Direction = spec.Direction == FirewallDirection.Inbound ? DirIn : DirOut;
-            rule.Action = ActionBlock;
-            rule.Protocol = ProtocolAny;
-            rule.Profiles = ProfilesAll;
-            rule.Enabled = true;
-            policy.Rules.Add(rule);
+            foreach (FirewallRuleSpec spec in wanted)
+            {
+                dynamic rule = CreateRuleObject();
+                rule.Name = spec.RuleName + pendingSuffix;
+                rule.Description = "Created by the Warden zero-trust agent.";
+                rule.ApplicationName = spec.AppPath;
+                rule.Direction = spec.Direction == FirewallDirection.Inbound ? DirIn : DirOut;
+                rule.Action = ActionBlock;
+                rule.Protocol = ProtocolAny;
+                rule.Profiles = ProfilesAll;
+                rule.Enabled = true;
+                policy.Rules.Add(rule);
+                created.Add((string)rule.Name);
+            }
+        }
+        catch
+        {
+            // Roll back the partial set; the previous rules (if any) are still in force.
+            foreach (string name in created)
+            {
+                try { policy.Rules.Remove(name); } catch (Exception ex) { _logger.LogWarning(ex, "Rollback failed for {Name}.", name); }
+            }
+            throw;
+        }
+
+        // New rules are live; now retire the old ones and drop the suffix.
+        UnblockApp(appPath, exceptNames: created);
+        foreach (string name in created)
+        {
+            try
+            {
+                dynamic rule = policy.Rules.Item(name);
+                rule.Name = name[..^pendingSuffix.Length];
+            }
+            catch (Exception ex)
+            {
+                // Still blocking (under the pending name); only the display name is off.
+                _logger.LogWarning(ex, "Could not rename firewall rule {Name}.", name);
+            }
         }
 
         return wanted;
     }
 
-    public void UnblockApp(string appPath)
+    public void UnblockApp(string appPath) => UnblockApp(appPath, exceptNames: null);
+
+    private void UnblockApp(string appPath, IReadOnlyCollection<string>? exceptNames)
     {
         dynamic policy = CreatePolicy();
         var toRemove = new List<string>();
@@ -108,7 +137,8 @@ public sealed class FirewallRuleManager : IFirewallRuleManager
             string name = rule.Name ?? string.Empty;
             string app = rule.ApplicationName ?? string.Empty;
             if (name.StartsWith(FirewallRuleSpecs.NamePrefix, StringComparison.Ordinal)
-                && string.Equals(app, appPath, StringComparison.OrdinalIgnoreCase))
+                && string.Equals(app, appPath, StringComparison.OrdinalIgnoreCase)
+                && (exceptNames is null || !exceptNames.Contains(name, StringComparer.Ordinal)))
             {
                 toRemove.Add(name);
             }

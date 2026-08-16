@@ -19,6 +19,9 @@ public sealed class CodeIntegritySession : ICodeIntegrityBlockSource
 
     public event Action<CiBlockEvent>? BlockObserved;
 
+    /// <summary>Raised when a CodeIntegrity event could not be parsed (event id, exception). Nothing is adjudicated for it.</summary>
+    public event Action<int, Exception>? ParseFailed;
+
     /// <param name="replayExisting">When true, blocks already in the log at startup are replayed.</param>
     public CodeIntegritySession(bool replayExisting = false) => _replayExisting = replayExisting;
 
@@ -75,9 +78,10 @@ public sealed class CodeIntegritySession : ICodeIntegrityBlockSource
             {
                 BlockObserved?.Invoke(Parse(rec));
             }
-            catch
+            catch (Exception ex)
             {
-                // malformed event; skip
+                // A block Warden cannot parse is a block it never adjudicates: the OS block stands, but say so.
+                ParseFailed?.Invoke(rec.Id, ex);
             }
         }
     }

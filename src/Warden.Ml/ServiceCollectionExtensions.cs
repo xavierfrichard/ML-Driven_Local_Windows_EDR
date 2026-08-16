@@ -12,6 +12,7 @@ public static class ServiceCollectionExtensions
         configure?.Invoke(options);
         services.AddSingleton(options);
         services.AddSingleton<IPeFeatureExtractor, EmberFeatureExtractor>();
+        services.AddSingleton<IPeFeaturesReader, PeFeaturesReader>();
         services.AddSingleton<OnnxScorer>();
         services.AddSingleton<IVerdictSource>(sp => sp.GetRequiredService<OnnxScorer>());
         return services;

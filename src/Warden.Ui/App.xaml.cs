@@ -78,7 +78,7 @@ public partial class App : Application
     /// <summary>
     /// Marshals a prompt request onto the WPF dispatcher, shows a <see cref="PromptWindow"/>, and
     /// returns the task that completes with the user's (or the timeout's) decision. Any failure
-    /// resolves to <see cref="PromptDecision.KeepBlocked"/> so the service fails safe.
+    /// resolves to <see cref="PromptDecision.Timeout"/> (blocked, not persisted) so the service fails safe.
     /// </summary>
     private Task<PromptDecision> ShowPromptAsync(PromptRequest request, CancellationToken cancellationToken)
     {
@@ -94,7 +94,7 @@ public partial class App : Application
         catch
         {
             // Dispatcher shutting down, or window creation failed: fail safe.
-            return Task.FromResult(PromptDecision.KeepBlocked);
+            return Task.FromResult(PromptDecision.Timeout);
         }
     }
 

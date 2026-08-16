@@ -90,23 +90,32 @@ public sealed class DossierBuilder
     public Dossier Build(VerdictContext context)
     {
         PeFeatures pe = SafePe(context);
-        long fileSize = SafeFileSize(context.ImagePath);
+        long fileSize = SafeFileSize(context.BytesPath);
 
+        // Every list item is length-capped as well as count-capped: PE import/section names are
+        // attacker-controlled bytes and must not be able to flood the prompt.
         ImmutableArray<string> suspicious = pe.ImportedFunctions.IsDefaultOrEmpty
             ? ImmutableArray<string>.Empty
             : pe.ImportedFunctions
                 .Where(f => SuspiciousApiNames.Contains(f))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .Take(_options.MaxSuspiciousFunctions)
+                .Select(f => Cap(f, _options.MaxStringLength) ?? string.Empty)
                 .ToImmutableArray();
 
         ImmutableArray<string> modules = pe.ImportedModules.IsDefaultOrEmpty
             ? ImmutableArray<string>.Empty
-            : pe.ImportedModules.Take(_options.MaxImportedModules).ToImmutableArray();
+            : pe.ImportedModules
+                .Take(_options.MaxImportedModules)
+                .Select(m => Cap(m, _options.MaxStringLength) ?? string.Empty)
+                .ToImmutableArray();
 
         ImmutableArray<string> sections = pe.SectionNames.IsDefaultOrEmpty
             ? ImmutableArray<string>.Empty
-            : pe.SectionNames.Take(32).ToImmutableArray();
+            : pe.SectionNames
+                .Take(32)
+                .Select(n => Cap(n, 32) ?? string.Empty)
+                .ToImmutableArray();
 
         return new Dossier(
             Sha256: context.Sha256 ?? string.Empty,
@@ -131,7 +140,7 @@ public sealed class DossierBuilder
             ParentName: Cap(ImageNameOf(context.ParentPath), _options.MaxStringLength) ?? string.Empty,
             ParentPath: Cap(context.ParentPath, _options.MaxStringLength * 4) ?? string.Empty,
             AttackChain: BuildChain(context.Chain),
-            NotableStrings: ExtractStrings(context.ImagePath));
+            NotableStrings: ExtractStrings(context.BytesPath));
     }
 
     private ImmutableArray<string> BuildChain(AttackChainNode chain)

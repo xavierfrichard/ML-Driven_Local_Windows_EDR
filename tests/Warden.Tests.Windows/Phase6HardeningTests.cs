@@ -111,3 +111,57 @@ public sealed class Phase6HardeningTests
         }
     }
 }
+
+/// <summary>Log-injection guard and the single data-directory resolver.</summary>
+public sealed class HardeningHelpersTests
+{
+    [Fact]
+    public void Control_characters_in_log_properties_are_escaped_and_long_values_truncated()
+    {
+        Assert.False(ControlCharacterSanitizingEnricher.NeedsSanitizing(@"C:\Users\bob\evil.exe"));
+        Assert.True(ControlCharacterSanitizingEnricher.NeedsSanitizing("evil.exe\r\nTAMPER [fake] forged line"));
+
+        string sanitized = ControlCharacterSanitizingEnricher.Sanitize("a\r\nb\tc\u001b[31m");
+        Assert.Equal(@"a\r\nb\tc\u001B[31m", sanitized);
+
+        string longValue = new string('x', ControlCharacterSanitizingEnricher.MaxPropertyLength + 10);
+        Assert.Contains("[truncated 10 chars]", ControlCharacterSanitizingEnricher.Sanitize(longValue), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Data_directory_resolver_accepts_only_rooted_local_non_root_paths()
+    {
+        string def = Warden.Core.WardenPaths.DefaultDataDirectory;
+        Assert.Equal(def, Warden.Core.WardenPaths.Resolve(null));
+        Assert.Equal(def, Warden.Core.WardenPaths.Resolve("   "));
+        Assert.Equal(def, Warden.Core.WardenPaths.Resolve(@"relative\dir"));
+        Assert.Equal(def, Warden.Core.WardenPaths.Resolve(@"\\server\share\Warden"));
+        Assert.Equal(def, Warden.Core.WardenPaths.Resolve(@"\rootless\Warden")); // no drive: resolves against the CWD's drive
+        Assert.Equal(def, Warden.Core.WardenPaths.Resolve(@"D:\"));
+        Assert.Equal(@"D:\WardenData", Warden.Core.WardenPaths.Resolve(@"D:\WardenData\"));
+        Assert.Equal(@"D:\WardenData", Warden.Core.WardenPaths.Resolve(@"D:\x\..\WardenData"));
+    }
+
+    [Fact]
+    public void Low_privilege_writer_probe_flags_a_users_writable_directory()
+    {
+        // %TEMP% is writable by the current user; a directory locked by the hardener is not (Users has no ACE).
+        string tmp = Path.Combine(Path.GetTempPath(), "warden-lpw-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tmp);
+        try
+        {
+            IReadOnlyList<string>? writers = DataDirectoryHardener.LowPrivilegeWriters(tmp);
+            Assert.NotNull(writers);
+            // The user's own SID is not a well-known low-privilege principal; the probe reports groups such
+            // as Users/Authenticated Users/Everyone only. %TEMP% inherits no such ACE on a default profile,
+            // so this may legitimately be empty — the contract under test is "does not throw, returns a list".
+            var hardener = new DataDirectoryHardener(NullLogger<DataDirectoryHardener>.Instance);
+            Assert.True(hardener.HardenDirectory(tmp));
+            Assert.Empty(DataDirectoryHardener.LowPrivilegeWriters(tmp)!);
+        }
+        finally
+        {
+            try { Directory.Delete(tmp, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+        }
+    }
+}

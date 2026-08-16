@@ -18,7 +18,7 @@ public partial class PromptWindow : Window
     private int _remainingSeconds;
     private bool _resolved;
 
-    /// <summary>Completes with the chosen decision. Never faults; times out to <see cref="PromptDecision.KeepBlocked"/>.</summary>
+    /// <summary>Completes with the chosen decision. Never faults; times out to <see cref="PromptDecision.Timeout"/>.</summary>
     public Task<PromptDecision> Completion => _completion.Task;
 
     /// <summary>Creates the prompt for the supplied request and starts the auto-dismiss countdown.</summary>
@@ -117,8 +117,9 @@ public partial class PromptWindow : Window
         _remainingSeconds--;
         if (_remainingSeconds <= 0)
         {
-            // Timeout is the zero-trust safe default.
-            Resolve(PromptDecision.KeepBlocked);
+            // Timeout is the zero-trust safe default: the block stands, but nobody decided, so the service
+            // does not persist it and will ask again next time.
+            Resolve(PromptDecision.Timeout);
             return;
         }
 
@@ -150,10 +151,10 @@ public partial class PromptWindow : Window
     /// <inheritdoc />
     protected override void OnClosed(EventArgs e)
     {
-        // If the window is dismissed by any other means, fail safe.
+        // If the window is dismissed by any other means, fail safe (unanswered → blocked, not persisted).
         _timer.Stop();
         _timer.Tick -= OnTick;
-        _completion.TrySetResult(PromptDecision.KeepBlocked);
+        _completion.TrySetResult(PromptDecision.Timeout);
         base.OnClosed(e);
     }
 }

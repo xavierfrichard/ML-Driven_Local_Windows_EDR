@@ -8,6 +8,10 @@
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="8.0.2" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="Warden.Tests.Windows" />
+  </ItemGroup>
+
   <PropertyGroup>
     <TargetFramework>net8.0-windows</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>

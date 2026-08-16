@@ -1,6 +1,5 @@
 using System.Collections.Concurrent;
 using System.IO.Pipes;
-using System.Text;
 using System.Text.Json;
 
 namespace Warden.Ipc;
@@ -11,14 +10,23 @@ namespace Warden.Ipc;
 /// connected tray-UI client, reconnecting automatically when the client drops.
 /// </summary>
 /// <remarks>
-/// <para>The wire format is newline-delimited UTF-8 JSON (<see cref="IpcProtocol.Json"/>): each
-/// <see cref="PromptRequest"/> is written as one line and the UI replies with one
+/// <para><b>Who may answer a prompt.</b> A prompt answer of <c>Allow</c> results in a persistent WDAC
+/// allow rule, so the peer must be authenticated. Three layers: (1) the pipe DACL admits only SYSTEM,
+/// Administrators and the service's own account (see <see cref="PipeGuard.BuildServerSecurity"/>), and
+/// the instance is created with <c>FILE_FLAG_FIRST_PIPE_INSTANCE</c> so a pre-created (squatted) pipe is
+/// detected instead of joined; (2) the client image name must be on the allow-list (the tray UI);
+/// (3) an <c>Allow</c> reply is honoured only when the impersonated client token is an Administrators
+/// member — anything else is downgraded to KeepBlocked and reported.</para>
+/// <para>The wire format is newline-delimited UTF-8 JSON (<see cref="IpcProtocol.Json"/>), read through
+/// a <see cref="BoundedLineReader"/> so an oversized frame drops the connection instead of growing
+/// memory. Each <see cref="PromptRequest"/> is one line and the UI replies with one
 /// <see cref="PromptResponse"/> line carrying the same <see cref="PromptRequest.RequestId"/>.</para>
 /// <para>The presenter is fail-safe by construction. If no UI is connected, the write fails, the
 /// client disconnects, or the user does not answer within
 /// <see cref="PromptRequest.AutoDismissSeconds"/> plus a small grace, <see cref="PromptAsync"/>
-/// resolves to <see cref="PromptDecision.KeepBlocked"/> so the OS-level block stays in place. A
-/// broken or absent UI can therefore never turn a blocked launch into a silent allow.</para>
+/// resolves to <see cref="PromptDecision.Timeout"/> — the OS-level block stays in place and nothing is
+/// persisted, so the user is asked again next time. A broken, absent or unauthenticated UI can therefore
+/// never turn a blocked launch into a silent allow.</para>
 /// </remarks>
 public sealed class PromptPipeServer : IPromptPresenter, IDisposable
 {
@@ -26,6 +34,8 @@ public sealed class PromptPipeServer : IPromptPresenter, IDisposable
     private const int GraceSeconds = 5;
 
     private readonly Action<Exception>? _onError;
+    private readonly Action<string>? _onSecurityEvent;
+    private readonly PipeServerOptions _options;
     private readonly CancellationTokenSource _cts = new();
     private readonly SemaphoreSlim _writeLock = new(1, 1);
 
@@ -48,9 +58,16 @@ public sealed class PromptPipeServer : IPromptPresenter, IDisposable
     /// Optional callback invoked when a background pipe error occurs. Use this to log; do not throw
     /// from it. Errors never surface to callers of <see cref="PromptAsync"/>, which fail safe.
     /// </param>
-    public PromptPipeServer(Action<Exception>? onError = null)
+    /// <param name="options">Peer policy; defaults to the strict production policy.</param>
+    /// <param name="onSecurityEvent">
+    /// Optional callback for security-relevant refusals (rejected peer image, non-admin Allow, squatted
+    /// pipe). The service routes these to the tamper log.
+    /// </param>
+    public PromptPipeServer(Action<Exception>? onError = null, PipeServerOptions? options = null, Action<string>? onSecurityEvent = null)
     {
         _onError = onError;
+        _options = options ?? new PipeServerOptions();
+        _onSecurityEvent = onSecurityEvent;
     }
 
     /// <summary>True while a tray-UI client is connected and able to receive prompts.</summary>
@@ -83,7 +100,7 @@ public sealed class PromptPipeServer : IPromptPresenter, IDisposable
 
     /// <inheritdoc />
     /// <remarks>
-    /// Returns <see cref="PromptDecision.KeepBlocked"/> immediately if no client is connected, and on
+    /// Returns <see cref="PromptDecision.Timeout"/> immediately if no client is connected, and on
     /// any write failure, disconnect, cancellation, or timeout while awaiting the reply.
     /// </remarks>
     public async Task<PromptResponse> PromptAsync(PromptRequest request, CancellationToken cancellationToken)
@@ -93,15 +110,15 @@ public sealed class PromptPipeServer : IPromptPresenter, IDisposable
         var pipe = _currentPipe;
         if (_disposed || pipe is null || !pipe.IsConnected)
         {
-            // Fail safe: nobody to ask.
-            return KeepBlocked(request);
+            // Fail safe: nobody to ask. Unanswered, not "decided": the block stands but is not persisted.
+            return Unanswered(request);
         }
 
         var tcs = new TaskCompletionSource<PromptResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
         if (!_pending.TryAdd(request.RequestId, tcs))
         {
             // Duplicate in-flight id (should not happen with Guids); fail safe rather than corrupt state.
-            return KeepBlocked(request);
+            return Unanswered(request);
         }
 
         try
@@ -117,20 +134,20 @@ public sealed class PromptPipeServer : IPromptPresenter, IDisposable
                 static state =>
                 {
                     var (source, req) = ((TaskCompletionSource<PromptResponse>, PromptRequest))state!;
-                    source.TrySetResult(new PromptResponse(req.RequestId, PromptDecision.KeepBlocked));
+                    source.TrySetResult(new PromptResponse(req.RequestId, PromptDecision.Timeout));
                 },
                 (tcs, request)).ConfigureAwait(false);
 
             var response = await tcs.Task.ConfigureAwait(false);
 
             // Guard against a stray reply carrying the wrong id.
-            return response.RequestId == request.RequestId ? response : KeepBlocked(request);
+            return response.RequestId == request.RequestId ? response : Unanswered(request);
         }
         catch (Exception ex)
         {
             // Write failure, disconnect mid-flight, or serialization error: never throw out of the hot path.
             _onError?.Invoke(ex);
-            return KeepBlocked(request);
+            return Unanswered(request);
         }
         finally
         {
@@ -166,16 +183,20 @@ public sealed class PromptPipeServer : IPromptPresenter, IDisposable
         while (!cancellationToken.IsCancellationRequested)
         {
             NamedPipeServerStream? pipe = null;
+            bool backOff = false;
             try
             {
-                pipe = new NamedPipeServerStream(
-                    IpcProtocol.PipeName,
-                    PipeDirection.InOut,
-                    maxNumberOfServerInstances: 1,
-                    PipeTransmissionMode.Byte,
-                    PipeOptions.Asynchronous);
+                // Max one instance and FirstPipeInstance on every create: our previous instance is always
+                // disposed before the next create, so if the name already exists someone else owns it.
+                pipe = CreateServerStream();
 
                 await pipe.WaitForConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+                if (!PeerAllowed(pipe))
+                {
+                    backOff = true; // don't let a rejected peer make us spin re-accepting it
+                    continue;
+                }
 
                 _currentPipe = pipe;
                 await ReadLoopAsync(pipe, cancellationToken).ConfigureAwait(false);
@@ -184,10 +205,19 @@ public sealed class PromptPipeServer : IPromptPresenter, IDisposable
             {
                 break;
             }
+            catch (UnauthorizedAccessException ex)
+            {
+                // FirstPipeInstance: the name already exists and we did not create it → squatting attempt
+                // (or a second Warden instance). Report, back off, retry — never join it.
+                _onSecurityEvent?.Invoke($"Prompt pipe '{_options.PromptPipeName}' already exists and is not ours: {ex.Message}");
+                _onError?.Invoke(ex);
+                backOff = true;
+            }
             catch (Exception ex)
             {
                 // A broken connection (client crash, pipe error) is expected; log and rebuild the pipe.
                 _onError?.Invoke(ex);
+                backOff = true;
             }
             finally
             {
@@ -195,17 +225,74 @@ public sealed class PromptPipeServer : IPromptPresenter, IDisposable
                 FailPending();
                 pipe?.Dispose();
             }
+
+            if (backOff)
+            {
+                try
+                {
+                    await Task.Delay(_options.RetryBackoff, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+            }
         }
+    }
+
+    private NamedPipeServerStream CreateServerStream()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            // Non-Windows hosts (unit tests on CI) get the default DACL; the product is Windows-only.
+            return new NamedPipeServerStream(
+                _options.PromptPipeName,
+                PipeDirection.InOut,
+                maxNumberOfServerInstances: 1,
+                PipeTransmissionMode.Byte,
+                PipeOptions.Asynchronous);
+        }
+
+        return PipeGuard.CreateServer(_options.PromptPipeName, maxInstances: 1, firstInstance: true);
+    }
+
+    private bool PeerAllowed(NamedPipeServerStream pipe)
+    {
+        if (!OperatingSystem.IsWindows() || _options.AllowedClientImageNames.Count == 0)
+        {
+            return true;
+        }
+
+        PipePeer peer = PipeGuard.ResolvePeer(pipe);
+        if (PipeGuard.PeerImageAllowed(peer, (IReadOnlyCollection<string>)_options.AllowedClientImageNames))
+        {
+            return true;
+        }
+
+        _onSecurityEvent?.Invoke(
+            $"Rejected prompt-pipe client pid {peer.ProcessId} image '{peer.ImagePath ?? "<unknown>"}' (not an allowed UI image).");
+        return false;
     }
 
     private async Task ReadLoopAsync(NamedPipeServerStream pipe, CancellationToken cancellationToken)
     {
-        // Leave the pipe open; the accept loop owns its lifetime.
-        using var reader = new StreamReader(pipe, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, leaveOpen: true);
+        var reader = new BoundedLineReader(pipe, _options.MaxFrameBytes);
+        bool? callerIsAdmin = null;
 
         while (!cancellationToken.IsCancellationRequested && pipe.IsConnected)
         {
-            var line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+            string? line;
+            try
+            {
+                line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (IpcFrameTooLargeException ex)
+            {
+                _onSecurityEvent?.Invoke("Prompt-pipe client sent an oversized frame; connection dropped.");
+                _onError?.Invoke(ex);
+                return;
+            }
+
             if (line is null)
             {
                 // Client closed the connection.
@@ -216,6 +303,9 @@ public sealed class PromptPipeServer : IPromptPresenter, IDisposable
             {
                 continue;
             }
+
+            // The client's security context is attached to the first message read; resolve it now, once.
+            callerIsAdmin ??= OperatingSystem.IsWindows() && PipeGuard.ClientIsAdministrator(pipe, _onError);
 
             PromptResponse? response;
             try
@@ -229,7 +319,21 @@ public sealed class PromptPipeServer : IPromptPresenter, IDisposable
                 continue;
             }
 
-            if (response is not null && _pending.TryGetValue(response.RequestId, out var tcs))
+            if (response is null)
+            {
+                continue;
+            }
+
+            if (response.Decision == PromptDecision.Allow
+                && _options.RequireAdministratorForAllow
+                && callerIsAdmin != true)
+            {
+                _onSecurityEvent?.Invoke(
+                    $"Prompt {response.RequestId} answered Allow by a non-Administrator client; downgraded to KeepBlocked.");
+                response = new PromptResponse(response.RequestId, PromptDecision.Timeout);
+            }
+
+            if (_pending.TryGetValue(response.RequestId, out var tcs))
             {
                 tcs.TrySetResult(response);
             }
@@ -241,12 +345,12 @@ public sealed class PromptPipeServer : IPromptPresenter, IDisposable
     {
         foreach (var entry in _pending)
         {
-            entry.Value.TrySetResult(new PromptResponse(entry.Key, PromptDecision.KeepBlocked));
+            entry.Value.TrySetResult(new PromptResponse(entry.Key, PromptDecision.Timeout));
         }
     }
 
-    private static PromptResponse KeepBlocked(PromptRequest request) =>
-        new(request.RequestId, PromptDecision.KeepBlocked);
+    private static PromptResponse Unanswered(PromptRequest request) =>
+        new(request.RequestId, PromptDecision.Timeout);
 
     /// <summary>Stops the accept loop, disconnects any client, and releases all resources.</summary>
     public void Dispose()

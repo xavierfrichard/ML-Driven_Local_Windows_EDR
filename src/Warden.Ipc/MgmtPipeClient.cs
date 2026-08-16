@@ -1,5 +1,5 @@
 using System.IO.Pipes;
-using System.Text;
+using System.Security.Principal;
 using System.Text.Json;
 
 namespace Warden.Ipc;
@@ -25,18 +25,26 @@ public sealed class MgmtException : Exception
 /// request/response calls over it, reconnecting transparently if the service restarts.
 /// </summary>
 /// <remarks>
-/// Calls are serialized by a semaphore: the wire protocol is one newline-delimited JSON request
+/// <para>Calls are serialized by a semaphore: the wire protocol is one newline-delimited JSON request
 /// followed by one response, so overlapping calls on a single pipe would interleave their framing.
-/// The UI's panel loads are short and sequential, so this costs nothing in practice.
+/// The UI's panel loads are short and sequential, so this costs nothing in practice.</para>
+/// <para><b>Server authentication.</b> The client connects with
+/// <see cref="TokenImpersonationLevel.Identification"/> — enough for the service's Administrators check,
+/// but a rogue pipe server can never <i>impersonate</i> the (elevated) UI — and refuses to talk to a
+/// pipe whose owner is not SYSTEM/Administrators/the current user (<see cref="PipeGuard.ServerLooksLegitimate"/>).</para>
 /// </remarks>
 public sealed class MgmtPipeClient : IDisposable
 {
     private static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(5);
 
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly string _pipeName;
     private NamedPipeClientStream? _pipe;
-    private StreamReader? _reader;
+    private BoundedLineReader? _reader;
     private bool _disposed;
+
+    /// <summary>Creates a client for the service's management pipe (name overridable for tests).</summary>
+    public MgmtPipeClient(string? pipeName = null) => _pipeName = string.IsNullOrWhiteSpace(pipeName) ? MgmtProtocol.PipeName : pipeName;
 
     /// <summary>True while a connection to the service is established.</summary>
     public bool IsConnected => _pipe is { IsConnected: true };
@@ -60,6 +68,25 @@ public sealed class MgmtPipeClient : IDisposable
         }
     }
 
+    /// <summary>Asks the service whether this connection may issue mutations (elevated caller).</summary>
+    public async Task<bool> IsAdministratorAsync(CancellationToken cancellationToken = default)
+    {
+        MgmtResponse response = await SendAsync(MgmtOperations.WhoAmI, payload: null, cancellationToken).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(response.PayloadJson))
+        {
+            return false;
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<WhoAmIPayload>(response.PayloadJson, IpcProtocol.Json)?.IsAdministrator ?? false;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
     /// <summary>Issues a mutating operation. Throws <see cref="MgmtException"/> if the service refuses it.</summary>
     public async Task InvokeAsync(string operation, object? payload, CancellationToken cancellationToken = default)
     {
@@ -79,6 +106,7 @@ public sealed class MgmtPipeClient : IDisposable
         try
         {
             // One transparent retry: the service may have restarted since the last call.
+            Exception? last = null;
             for (int attempt = 0; attempt < 2; attempt++)
             {
                 try
@@ -90,13 +118,16 @@ public sealed class MgmtPipeClient : IDisposable
                         ? response
                         : throw new MgmtException(response.Error ?? "The Warden service refused the request.");
                 }
-                catch (Exception ex) when (attempt == 0 && ex is IOException or InvalidOperationException or TimeoutException)
+                catch (Exception ex) when (ex is IOException or InvalidOperationException or TimeoutException)
                 {
+                    last = ex;
                     DropConnection();
                 }
             }
 
-            throw new MgmtException("Lost the connection to the Warden service.");
+            throw new MgmtException(
+                "Lost the connection to the Warden service (it may have refused this client — the management UI must be the "
+                + "Warden tray running elevated).", last!);
         }
         finally
         {
@@ -115,9 +146,10 @@ public sealed class MgmtPipeClient : IDisposable
 
         var pipe = new NamedPipeClientStream(
             ".",
-            MgmtProtocol.PipeName,
+            _pipeName,
             PipeDirection.InOut,
-            PipeOptions.Asynchronous);
+            PipeOptions.Asynchronous,
+            TokenImpersonationLevel.Identification);
 
         try
         {
@@ -129,20 +161,33 @@ public sealed class MgmtPipeClient : IDisposable
             throw new MgmtException(
                 "The Warden service is not reachable. Is the WardenAgent service running?");
         }
+        catch (UnauthorizedAccessException)
+        {
+            pipe.Dispose();
+            throw new MgmtException(
+                "Access to the Warden service was denied. The management UI must run elevated (Administrators).");
+        }
         catch (Exception)
         {
             pipe.Dispose();
             throw;
         }
 
+        if (OperatingSystem.IsWindows() && !PipeGuard.ServerLooksLegitimate(pipe))
+        {
+            pipe.Dispose();
+            throw new MgmtException(
+                "Refusing to talk to a management pipe that is not owned by the Warden service (possible impersonation).");
+        }
+
         _pipe = pipe;
-        _reader = new StreamReader(pipe, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, leaveOpen: true);
+        _reader = new BoundedLineReader(pipe);
     }
 
     private async Task<MgmtResponse> ExchangeAsync(MgmtRequest request, CancellationToken cancellationToken)
     {
         NamedPipeClientStream pipe = _pipe ?? throw new InvalidOperationException("Not connected.");
-        StreamReader reader = _reader ?? throw new InvalidOperationException("Not connected.");
+        BoundedLineReader reader = _reader ?? throw new InvalidOperationException("Not connected.");
 
         byte[] json = JsonSerializer.SerializeToUtf8Bytes(request, IpcProtocol.Json);
         var frame = new byte[json.Length + 1];
@@ -170,7 +215,6 @@ public sealed class MgmtPipeClient : IDisposable
 
     private void DropConnection()
     {
-        _reader?.Dispose();
         _reader = null;
         _pipe?.Dispose();
         _pipe = null;

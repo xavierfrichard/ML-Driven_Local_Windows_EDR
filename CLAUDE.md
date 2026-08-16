@@ -35,19 +35,21 @@ dotnet run --project tools\Warden.Spike\Warden.Spike.csproj -- --watch       # l
 ```
 
 **Runtime environment variables** (behavior is configured in code + env vars, *not* `appsettings.json`, which only holds log levels):
-- `WARDEN_ENFORCE_HARDENING=1` — re-applies the data-dir/DB ACL lockdown on startup. The **installer** sets this (Machine scope); a plain dev run must **not** set it, or it will re-ACL `%ProgramData%\Warden`.
-- `WARDEN_ANTHROPIC_API_KEY` — enables the LLM analyst tier (otherwise that tier stays silent).
-- The ML tier stays dormant until an ONNX model exists at `%ProgramData%\Warden\ml\model.onnx`.
+- `WARDEN_DATA_DIR` — the one data directory every module derives its paths from (`Warden.Core.WardenPaths`); defaults to `%ProgramData%\Warden`. Must be a fully-qualified local path; the installer sets it (Machine scope).
+- `WARDEN_ENFORCE_HARDENING=1` — re-applies the data-dir/DB ACL lockdown on startup and checks that the install directory is not writable by low-privilege accounts. The **installer** sets this (Machine scope); a plain dev run must **not** set it, or it will re-ACL the data dir.
+- `WARDEN_WDAC_BASE_POLICY_GUID` — the WDAC base policy the Warden supplemental attaches to; unset = discovered from CiTool at run time (never hard-code a machine's GUID in source).
+- `WARDEN_VT_API_KEY` — enables the VirusTotal tier. `WARDEN_ANTHROPIC_API_KEY` — enables the LLM analyst tier. `WARDEN_ENABLE_CLAUDE_CLI=1` + `WARDEN_CLAUDE_CLI_PATH=<absolute path>` — the subscription-backed Claude CLI provider (a bare/relative path leaves it disabled: a SYSTEM service never resolves executables through PATH).
+- The ML tier stays dormant until an ONNX model exists at `<data dir>\ml\model.onnx` (optionally pinned via `MlOptions.ModelSha256`).
 
 **Install as a service** (Phase 6, elevated): publish then run the installer — see `installer\README.md`.
 
 ```powershell
 dotnet publish src\Warden.Service\Warden.Service.csproj -c Release -o out\service
 dotnet publish src\Warden.Ui\Warden.Ui.csproj           -c Release -o out\ui
-.\installer\install.ps1 -BinDir out\service -UiExe out\ui\Warden.Ui.exe
+.\installer\install.ps1 -BinDir out\service -UiDir out\ui
 ```
 
-`install.ps1` creates an ACL-locked `%ProgramData%\Warden`, registers the `WardenAgent` service as LocalSystem, applies a hardened service SDDL (`sc sdset`), sets restart-on-kill recovery, and sets `WARDEN_ENFORCE_HARDENING=1`. `uninstall.ps1` reverses it; `sign.ps1` Authenticode-signs binaries (the build does **not** sign them).
+`install.ps1` **copies the binaries to `%ProgramFiles%\Warden` and locks that tree** (a LocalSystem service must never load code from a user-writable directory), creates the ACL-locked data dir, registers the `WardenAgent` service as LocalSystem via the pinned `%ProgramFiles%\dotnet\dotnet.exe`, applies a hardened service SDDL (`sc sdset`), sets restart-on-kill recovery, sets `WARDEN_ENFORCE_HARDENING=1` / `WARDEN_DATA_DIR`, and registers the tray UI to run **elevated** at logon (its manifest is `requireAdministrator`). `uninstall.ps1` reverses it (destructive steps are confined to `%ProgramFiles%`/`%ProgramData%` and confirmed); `sign.ps1` Authenticode-signs binaries (the build does **not** sign them).
 
 ## Architecture
 
@@ -65,8 +67,8 @@ There is **no score fusion** — cheap/deterministic gates run first, expensive 
 | Kind | Class | Project | Behavior |
 |---|---|---|---|
 | 0 Rules | `RulesEngine` | Warden.Rules | User allow/block rules, **deny-wins** |
-| 1 TrustGate | `AuthenticodeTrustGate` | Warden.Trust | Fast-allow trusted-signed/trusted-path; **never blocks** |
-| 2 Whitelist | `WhitelistVerdictSource` | Warden.Rules | Replay a prior recorded decision for this SHA-256 |
+| 1 Whitelist | `WhitelistVerdictSource` | Warden.Rules | Replay a prior recorded decision for this SHA-256 (runs *before* the trust gate so an explicit Block outranks any fast-allow) |
+| 2 TrustGate | `AuthenticodeTrustGate` | Warden.Trust | Fast-allow **WinVerifyTrust-verified** signature + trusted publisher + trusted, privileged-owned path; **never blocks** |
 | 3 VirusTotal | `VirusTotalClient` | Warden.Reputation | Cached hash reputation; decisive only at extremes |
 | 4 Ml | `OnnxScorer` | Warden.Ml | EMBER→ONNX score; block high / allow low; mid-band defers |
 | 5 Llm | `LlmVerdictSource` | Warden.Llm | LLM analyst on a structured dossier |

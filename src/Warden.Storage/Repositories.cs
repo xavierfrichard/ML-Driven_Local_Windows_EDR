@@ -28,6 +28,9 @@ public interface IWhitelistRepository
 
     Task<IReadOnlyList<WhitelistEntry>> GetAllAsync(int limit = 1000, CancellationToken cancellationToken = default);
 
+    /// <summary>The entry with this row id, or null.</summary>
+    Task<WhitelistEntry?> GetByIdAsync(long id, CancellationToken cancellationToken = default);
+
     /// <summary>Flips an existing entry between Allow and Block (revoking or restoring a file).</summary>
     Task SetActionAsync(long id, PolicyAction action, CancellationToken cancellationToken = default);
 }

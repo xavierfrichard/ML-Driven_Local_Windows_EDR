@@ -31,6 +31,9 @@
     <ProjectReference Include="..\..\src\Warden.AntiExploit\Warden.AntiExploit.csproj" />
     <ProjectReference Include="..\..\src\Warden.Firewall\Warden.Firewall.csproj" />
     <ProjectReference Include="..\..\src\Warden.Hardening\Warden.Hardening.csproj" />
+    <ProjectReference Include="..\..\src\Warden.Trust\Warden.Trust.csproj" />
+    <ProjectReference Include="..\..\src\Warden.Ipc\Warden.Ipc.csproj" />
+    <ProjectReference Include="..\..\src\Warden.Wdac\Warden.Wdac.csproj" />
   </ItemGroup>
 
 </Project>

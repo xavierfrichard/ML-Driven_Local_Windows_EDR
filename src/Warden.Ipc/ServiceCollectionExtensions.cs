@@ -5,7 +5,17 @@ using Microsoft.Extensions.Logging;
 
 namespace Warden.Ipc;
 
-/// <summary>Dependency-injection registration for the service-side IPC prompt channel.</summary>
+/// <summary>
+/// Receives security-relevant IPC refusals (rejected peer image, non-admin Allow, squatted pipe name,
+/// oversized frame). The service adapts this to its tamper log; if nothing is registered the events are
+/// only written to the ordinary log.
+/// </summary>
+public interface IPipeSecurityEventSink
+{
+    void OnSecurityEvent(string message);
+}
+
+/// <summary>Dependency-injection registration for the service-side IPC channels.</summary>
 public static class ServiceCollectionExtensions
 {
     /// <summary>
@@ -14,14 +24,24 @@ public static class ServiceCollectionExtensions
     /// host and is disposed on shutdown.
     /// </summary>
     /// <param name="services">The service collection to register into.</param>
+    /// <param name="options">Peer policy for both channels; defaults to the strict production policy.</param>
     /// <returns>The same <paramref name="services"/> instance for chaining.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="services"/> is null.</exception>
-    public static IServiceCollection AddWardenIpcServer(this IServiceCollection services)
+    public static IServiceCollection AddWardenIpcServer(this IServiceCollection services, PipeServerOptions? options = null)
     {
         ArgumentNullException.ThrowIfNull(services);
 
+        services.TryAddSingleton(options ?? new PipeServerOptions());
+
         // Single instance shared by the presenter contract and the hosted-service lifecycle.
-        services.TryAddSingleton<PromptPipeServer>();
+        services.TryAddSingleton(sp =>
+        {
+            ILogger logger = sp.GetRequiredService<ILoggerFactory>().CreateLogger<PromptPipeServer>();
+            return new PromptPipeServer(
+                ex => logger.LogWarning(ex, "Prompt pipe error (connection dropped or malformed frame)."),
+                sp.GetRequiredService<PipeServerOptions>(),
+                SecuritySink(sp, logger));
+        });
         services.TryAddSingleton<IPromptPresenter>(sp => sp.GetRequiredService<PromptPipeServer>());
         services.AddHostedService<PromptPipeServerHostedService>();
 
@@ -32,18 +52,34 @@ public static class ServiceCollectionExtensions
     /// Registers the management channel host. Requires an <see cref="IMgmtHandler"/> registration (the
     /// service supplies one over its repositories) and starts the pipe with the host.
     /// </summary>
-    public static IServiceCollection AddWardenMgmtServer(this IServiceCollection services)
+    public static IServiceCollection AddWardenMgmtServer(this IServiceCollection services, PipeServerOptions? options = null)
     {
         ArgumentNullException.ThrowIfNull(services);
 
-        services.TryAddSingleton(sp => new MgmtPipeServer(
-            sp.GetRequiredService<IMgmtHandler>(),
-            ex => sp.GetRequiredService<ILoggerFactory>()
-                .CreateLogger<MgmtPipeServer>()
-                .LogWarning(ex, "Management pipe error (connection dropped or malformed frame).")));
+        services.TryAddSingleton(options ?? new PipeServerOptions());
+
+        services.TryAddSingleton(sp =>
+        {
+            ILogger logger = sp.GetRequiredService<ILoggerFactory>().CreateLogger<MgmtPipeServer>();
+            return new MgmtPipeServer(
+                sp.GetRequiredService<IMgmtHandler>(),
+                ex => logger.LogWarning(ex, "Management pipe error (connection dropped or malformed frame)."),
+                sp.GetRequiredService<PipeServerOptions>(),
+                SecuritySink(sp, logger));
+        });
         services.AddHostedService<MgmtPipeServerHostedService>();
 
         return services;
+    }
+
+    private static Action<string> SecuritySink(IServiceProvider sp, ILogger logger)
+    {
+        IPipeSecurityEventSink? sink = sp.GetService<IPipeSecurityEventSink>();
+        return message =>
+        {
+            logger.LogWarning("IPC security event: {Message}", message);
+            sink?.OnSecurityEvent(message);
+        };
     }
 }
 

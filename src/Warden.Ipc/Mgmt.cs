@@ -1,13 +1,17 @@
 namespace Warden.Ipc;
 
 /// <summary>
-/// Operation names for the management channel. Reads are readable by any authenticated local user;
-/// every name in <see cref="Mutations"/> changes agent policy and is refused unless the calling
-/// process token is a member of the local Administrators group (see <c>MgmtPipeServer</c>).
+/// Operation names for the management channel. Authorization is <b>default-deny</b>: only the names in
+/// <see cref="Reads"/> may be issued by a connected caller whose token is not an Administrators member;
+/// every other name is treated as a mutation and refused unless the impersonated caller is elevated
+/// (see <c>MgmtPipeServer</c>). Adding a new mutating operation therefore needs no bookkeeping — forgetting
+/// to list it cannot make it callable by a non-admin. (The pipe DACL additionally admits only elevated
+/// processes, so in production even reads require elevation; the read list matters for dev runs.)
 /// </summary>
 public static class MgmtOperations
 {
     // ---- reads ------------------------------------------------------------------------------------
+    public const string WhoAmI = "whoami";
     public const string WhitelistList = "whitelist.list";
     public const string UserLogList = "userlog.list";
     public const string RulesList = "rules.list";
@@ -30,7 +34,25 @@ public static class MgmtOperations
     public const string WhitelistSetAction = "whitelist.setaction";
     public const string VulnAppSetFirewall = "vulnapp.setfirewall";
 
-    /// <summary>Operations that change agent state and therefore require an elevated caller.</summary>
+    /// <summary>The read-only operations — the only ones a non-elevated caller may issue.</summary>
+    public static readonly IReadOnlySet<string> Reads = new HashSet<string>(StringComparer.Ordinal)
+    {
+        WhoAmI,
+        WhitelistList,
+        UserLogList,
+        RulesList,
+        CommandLinesList,
+        QuarantineList,
+        ChainsList,
+        FoldersList,
+        VulnAppsList,
+        MitigationsList,
+        FirewallList,
+        WebAppsList,
+        TamperList,
+    };
+
+    /// <summary>The known mutating operations (for display / tests). Authorization does not depend on this list.</summary>
     public static readonly IReadOnlySet<string> Mutations = new HashSet<string>(StringComparer.Ordinal)
     {
         RulesAdd,
@@ -42,8 +64,11 @@ public static class MgmtOperations
         VulnAppSetFirewall,
     };
 
-    /// <summary>True when <paramref name="operation"/> changes state and needs Administrators.</summary>
-    public static bool IsMutation(string operation) => Mutations.Contains(operation);
+    /// <summary>True when <paramref name="operation"/> is on the read allow-list.</summary>
+    public static bool IsRead(string operation) => operation is not null && Reads.Contains(operation);
+
+    /// <summary>True when <paramref name="operation"/> needs Administrators — i.e. anything that is not a read.</summary>
+    public static bool IsMutation(string operation) => !IsRead(operation);
 }
 
 /// <summary>
@@ -62,6 +87,9 @@ public sealed record MgmtResponse(Guid RequestId, bool Ok, string? Error, string
 
     public static MgmtResponse Success(Guid id, string? payloadJson = null) => new(id, true, null, payloadJson);
 }
+
+/// <summary>Reply to <see cref="MgmtOperations.WhoAmI"/>: whether the caller may issue mutations.</summary>
+public sealed record WhoAmIPayload(bool IsAdministrator);
 
 /// <summary>Argument payloads. Kept primitive so the wire format stays stable and UI-friendly.</summary>
 public sealed record SetActionPayload(long Id, int Action);

@@ -31,21 +31,32 @@ A self-signed certificate is fine for personal test use; distribution needs an O
 ## Install (elevated, on the target / VM)
 
 ```powershell
-.\installer\install.ps1 -BinDir out\service -UiExe out\ui\Warden.Ui.exe
+.\installer\install.ps1 -BinDir out\service -UiDir out\ui [-WdacBasePolicyGuid '{...}']
 ```
 
 This:
 
-1. Creates `%ProgramData%\Warden` locked to **SYSTEM + Administrators** only (`icacls /inheritance:r`).
-2. Registers the **WardenAgent** service as `LocalSystem`, auto-start, launched via the trusted `dotnet`
-   host (`binPath = "dotnet" "…\Warden.Service.dll"`).
+0. **Copies** the published binaries to `%ProgramFiles%\Warden\{service,ui}` and locks that tree
+   (SYSTEM/Administrators full, Users read+execute). A LocalSystem service must never load code from a
+   user-writable directory (a repo `out\` folder or a user profile) — anyone could swap the DLL and be
+   SYSTEM on the next restart. The service (and the agent's own startup self-check) point at this copy.
+1. Creates `%ProgramData%\Warden` locked to **SYSTEM + Administrators** only (`icacls /inheritance:r`) and
+   publishes it to the service as the machine variable `WARDEN_DATA_DIR` (every module — database,
+   quarantine, WDAC work dir, snapshots, logs — derives its paths from it).
+2. Registers the **WardenAgent** service as `LocalSystem`, auto-start, launched via the **pinned**
+   `%ProgramFiles%\dotnet\dotnet.exe` host (`binPath = "…\dotnet.exe" "%ProgramFiles%\Warden\service\Warden.Service.dll"`).
 3. Applies the hardened **service SDDL** (`sc sdset`) — standard users may query the service but cannot
    **stop, change, or delete** it. Mirrors `Warden.Hardening.HardeningSddl.ServiceDacl`.
 4. Configures **restart-on-kill** recovery (`sc failure … actions= restart/…`, `sc failureflag 1`).
 5. Sets `WARDEN_ENFORCE_HARDENING=1` (machine) so the service re-applies the data-dir/DB ACL on every
    start (maintains lockdown even if it drifts).
-6. Optionally registers the tray UI to launch at logon (a scheduled task; the UI runs in the user
-   session, not session 0).
+6. Optionally registers the tray UI to launch **elevated** at logon (a scheduled task with
+   `-RunLevel Highest`; the UI's manifest is `requireAdministrator` because the service's pipes admit only
+   elevated callers and an "Allow" is honoured only from an Administrators token). Standard-user accounts
+   do not get the tray and cannot approve launches.
+7. Optionally records the machine's WDAC base-policy GUID (`WARDEN_WDAC_BASE_POLICY_GUID`); otherwise
+   the service discovers it from CiTool at run time. `WARDEN_VT_API_KEY`, `WARDEN_ANTHROPIC_API_KEY`,
+   `WARDEN_ENABLE_CLAUDE_CLI` / `WARDEN_CLAUDE_CLI_PATH` are the other machine-scoped knobs.
 
 Verify:
 
@@ -58,8 +69,8 @@ sc.exe qfailure WardenAgent    # recovery actions
 ## Uninstall
 
 ```powershell
-.\installer\uninstall.ps1              # stop + delete service, remove flag + UI task
-.\installer\uninstall.ps1 -RemoveData  # also take ownership of and remove %ProgramData%\Warden
+.\installer\uninstall.ps1              # stop + delete service, remove config vars + UI task + %ProgramFiles%\Warden
+.\installer\uninstall.ps1 -RemoveData  # also take ownership of and remove the data directory (confirmed; -Force to skip)
 ```
 
 ## What self-protection does (and does not) cover

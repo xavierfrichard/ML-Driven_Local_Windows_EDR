@@ -46,6 +46,12 @@ public sealed class VirusTotalClient : IVerdictSource
             return VerdictResult.Undecided(Kind, "VirusTotal disabled or no hash.");
         }
 
+        // The hash is interpolated into a URL path: accept only a well-formed SHA-256.
+        if (!IsSha256Hex(context.Sha256))
+        {
+            return VerdictResult.Undecided(Kind, "Hash is not a SHA-256; not queried.");
+        }
+
         ReputationRecord? record = null;
         try
         {
@@ -80,7 +86,8 @@ public sealed class VirusTotalClient : IVerdictSource
                 $"VirusTotal: {record.VtPositives}/{record.VtTotal} engines flagged this file.");
         }
 
-        if (_options.AllowKnownClean && record.VtPositives == 0 && record.VtTotal >= _options.CleanMinEngines)
+        bool freshEnoughToAllow = now - record.CachedTs <= _options.MaxAllowStaleness;
+        if (_options.AllowKnownClean && freshEnoughToAllow && record.VtPositives == 0 && record.VtTotal >= _options.CleanMinEngines)
         {
             return new VerdictResult(Verdict.Allow, Kind, 0.9,
                 $"VirusTotal: clean across {record.VtTotal} engines.");
@@ -107,10 +114,12 @@ public sealed class VirusTotalClient : IVerdictSource
                 http.BaseAddress = _options.BaseAddress;
             }
 
-            using var request = new HttpRequestMessage(HttpMethod.Get, $"files/{sha256}");
+            using var request = new HttpRequestMessage(HttpMethod.Get, $"files/{sha256.ToUpperInvariant()}");
             request.Headers.Add("x-apikey", _options.ApiKey);
 
-            using HttpResponseMessage response = await http.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            cts.CancelAfter(_options.RequestTimeout);
+            using HttpResponseMessage response = await http.SendAsync(request, cts.Token).ConfigureAwait(false);
             long ttl = (long)_options.CacheTtl.TotalSeconds;
 
             if (response.StatusCode == HttpStatusCode.NotFound)
@@ -129,13 +138,18 @@ public sealed class VirusTotalClient : IVerdictSource
                 return null;
             }
 
-            await using Stream stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-            using JsonDocument doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
+            await using Stream stream = await response.Content.ReadAsStreamAsync(cts.Token).ConfigureAwait(false);
+            using JsonDocument doc = await JsonDocument.ParseAsync(stream, cancellationToken: cts.Token).ConfigureAwait(false);
             return ParseRecord(sha256, doc.RootElement, ttl);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw; // the caller is shutting down
         }
         catch (OperationCanceledException)
         {
-            throw;
+            _logger.LogWarning("VirusTotal lookup for {Sha} timed out after {Timeout}; staying offline-tolerant.", sha256, _options.RequestTimeout);
+            return null;
         }
         catch (Exception ex)
         {
@@ -189,6 +203,22 @@ public sealed class VirusTotalClient : IVerdictSource
             Sha256 = sha256, VtPositives = malicious, VtTotal = total, VtFirstSeen = firstSeen,
             CachedTs = DateTimeOffset.UtcNow, TtlSecs = ttl,
         };
+    }
+
+    private static bool IsSha256Hex(string value)
+    {
+        if (value.Length != 64)
+        {
+            return false;
+        }
+        foreach (char c in value)
+        {
+            if (!char.IsAsciiHexDigit(c))
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static double Confidence(ReputationRecord r) =>

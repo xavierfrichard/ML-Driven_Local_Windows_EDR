@@ -1,22 +1,28 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
 using Warden.Firewall;
 using Warden.Ipc;
 using Warden.Storage;
+using Warden.Wdac;
 
 namespace Warden.Service;
 
 /// <summary>
 /// Serves the tray UI's panel reads and policy edits. The service owns every database write: the data
 /// directory is ACL-locked to SYSTEM + Administrators, so a user-session UI cannot open the SQLite file
-/// itself, and routing through here also keeps a single writer on the WAL.
+/// itself, and routing through here keeps the writes on the service's connections.
 /// </summary>
 /// <remarks>
-/// Authorization for mutating operations is enforced by <see cref="MgmtPipeServer"/> before dispatch
-/// (impersonated Administrators check). The <c>callerIsAdmin</c> argument is re-checked here for the
-/// operations that make real machine changes, so a future caller of this class cannot skip the gate.
+/// <para>Authorization for mutating operations is enforced by <see cref="MgmtPipeServer"/> before dispatch
+/// (impersonated Administrators check, default-deny for anything not on the read list). The
+/// <c>callerIsAdmin</c> argument is re-checked here for every non-read, so a future caller of this class
+/// cannot skip the gate.</para>
+/// <para>Payloads are validated before they touch policy: a whitelist hash must be 64 hex characters, a
+/// folder rule must be a rooted path that is not a drive root, and firewall changes apply to the path
+/// recorded for the row, never a caller-supplied one.</para>
 /// </remarks>
-public sealed class MgmtRequestHandler : IMgmtHandler
+public sealed partial class MgmtRequestHandler : IMgmtHandler
 {
     private readonly IWhitelistRepository _whitelist;
     private readonly IRulesRepository _rules;
@@ -30,6 +36,7 @@ public sealed class MgmtRequestHandler : IMgmtHandler
     private readonly IWebAppClassificationRepository _webApps;
     private readonly ITamperLogRepository _tamper;
     private readonly IFirewallRuleManager _firewall;
+    private readonly IWdacAllowlistManager _wdac;
     private readonly ILogger<MgmtRequestHandler> _logger;
 
     public MgmtRequestHandler(
@@ -45,6 +52,7 @@ public sealed class MgmtRequestHandler : IMgmtHandler
         IWebAppClassificationRepository webApps,
         ITamperLogRepository tamper,
         IFirewallRuleManager firewall,
+        IWdacAllowlistManager wdac,
         ILogger<MgmtRequestHandler> logger)
     {
         _whitelist = whitelist;
@@ -59,6 +67,7 @@ public sealed class MgmtRequestHandler : IMgmtHandler
         _webApps = webApps;
         _tamper = tamper;
         _firewall = firewall;
+        _wdac = wdac;
         _logger = logger;
     }
 
@@ -66,8 +75,8 @@ public sealed class MgmtRequestHandler : IMgmtHandler
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        // Defence in depth: the pipe server already refused unprivileged mutations.
-        if (MgmtOperations.IsMutation(request.Operation) && !callerIsAdmin)
+        // Defence in depth: the pipe server already refused unprivileged non-reads (default-deny).
+        if (!MgmtOperations.IsRead(request.Operation) && !callerIsAdmin)
         {
             return MgmtResponse.Fail(request.RequestId, MgmtProtocol.ElevationRequired);
         }
@@ -77,6 +86,7 @@ public sealed class MgmtRequestHandler : IMgmtHandler
         return request.Operation switch
         {
             // ---- reads ------------------------------------------------------------------------------
+            MgmtOperations.WhoAmI => MgmtResponse.Success(id, JsonSerializer.Serialize(new WhoAmIPayload(callerIsAdmin), IpcProtocol.Json)),
             MgmtOperations.WhitelistList => Json(id, await _whitelist.GetAllAsync(1000, cancellationToken).ConfigureAwait(false)),
             MgmtOperations.UserLogList => Json(id, await UserLogAsync(cancellationToken).ConfigureAwait(false)),
             MgmtOperations.RulesList => Json(id, await _rules.GetAllAsync(cancellationToken).ConfigureAwait(false)),
@@ -99,7 +109,7 @@ public sealed class MgmtRequestHandler : IMgmtHandler
             MgmtOperations.WhitelistSetAction => await SetWhitelistActionAsync(id, request.PayloadJson, cancellationToken).ConfigureAwait(false),
             MgmtOperations.VulnAppSetFirewall => await SetFirewallAsync(id, request.PayloadJson, cancellationToken).ConfigureAwait(false),
 
-            _ => MgmtResponse.Fail(id, $"Unknown operation '{request.Operation}'."),
+            _ => MgmtResponse.Fail(id, "Unknown operation."),
         };
     }
 
@@ -110,6 +120,82 @@ public sealed class MgmtRequestHandler : IMgmtHandler
         return all.Where(w => string.Equals(w.Source, "UserPrompt", StringComparison.OrdinalIgnoreCase)).ToList();
     }
 
+    // ---- validation helpers -----------------------------------------------------------------------
+
+    [GeneratedRegex("^[0-9A-Fa-f]{64}$")]
+    private static partial Regex Sha256Hex();
+
+    private static bool IsSha256(string? value) => value is not null && Sha256Hex().IsMatch(value);
+
+    /// <summary>A rooted, canonical local path that is not a bare drive root (so "C:\" cannot become a rule).</summary>
+    private static bool IsAcceptableLocalPath(string? value, bool allowDriveRoot, out string canonical, out string? error)
+    {
+        canonical = string.Empty;
+        error = null;
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            error = "Path is empty.";
+            return false;
+        }
+
+        try
+        {
+            canonical = Path.GetFullPath(value);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            error = "Path is not a valid local path.";
+            return false;
+        }
+
+        if (!Path.IsPathRooted(canonical) || canonical.StartsWith(@"\\", StringComparison.Ordinal))
+        {
+            error = "Path must be a rooted local path (no UNC/device paths).";
+            return false;
+        }
+
+        if (!allowDriveRoot && Path.GetPathRoot(canonical) is { } root
+            && string.Equals(root, canonical.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+        {
+            error = "A drive root is not accepted here (it would apply to everything on the volume).";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static string? ValidateRule(RuleEntry rule)
+    {
+        if (string.IsNullOrWhiteSpace(rule.MatchValue))
+        {
+            return "Rule value is empty.";
+        }
+
+        if (!Enum.IsDefined(rule.Kind) || !Enum.IsDefined(rule.Action))
+        {
+            return "Rule kind/action is invalid.";
+        }
+
+        switch (rule.Kind)
+        {
+            case RuleKind.Hash:
+                return IsSha256(rule.MatchValue) ? null : "A hash rule needs a 64-hex-character SHA-256.";
+            case RuleKind.Signature:
+                return rule.MatchValue.Trim().Length >= 3 ? null : "A signature rule needs at least 3 characters of publisher name.";
+            case RuleKind.Folder:
+                // A folder ALLOW on a drive root is a global allow; a BLOCK on a drive root is fine.
+                return IsAcceptableLocalPath(rule.MatchValue, allowDriveRoot: rule.Action == PolicyAction.Block, out _, out string? err) ? null : err;
+            case RuleKind.Extension:
+                return rule.MatchValue.StartsWith('.') && rule.MatchValue.Length >= 2 && !rule.MatchValue.Any(char.IsWhiteSpace)
+                    ? null
+                    : "An extension rule looks like \".exe\".";
+            default:
+                return "Rule kind is invalid.";
+        }
+    }
+
+    // ---- mutations --------------------------------------------------------------------------------
+
     private async Task<MgmtResponse> AddRuleAsync(Guid id, string? payload, CancellationToken cancellationToken)
     {
         if (!TryParse(payload, out RuleEntry? rule, out string? error))
@@ -117,8 +203,13 @@ public sealed class MgmtRequestHandler : IMgmtHandler
             return MgmtResponse.Fail(id, error);
         }
 
+        if (ValidateRule(rule!) is { } invalid)
+        {
+            return MgmtResponse.Fail(id, invalid);
+        }
+
         long newId = await _rules.AddAsync(rule!, cancellationToken).ConfigureAwait(false);
-        _logger.LogInformation("Mgmt: rule {Id} added ({Kind} {Action} {Value}).", newId, rule!.Kind, rule.Action, rule.MatchValue);
+        _logger.LogInformation("Mgmt: rule {Id} added ({Kind} {Action}).", newId, rule!.Kind, rule.Action);
         return MgmtResponse.Success(id);
     }
 
@@ -141,8 +232,18 @@ public sealed class MgmtRequestHandler : IMgmtHandler
             return MgmtResponse.Fail(id, error);
         }
 
-        await _folders.AddAsync(folder!, cancellationToken).ConfigureAwait(false);
-        _logger.LogInformation("Mgmt: protected folder added ({Path}).", folder!.Path);
+        if (!IsAcceptableLocalPath(folder!.Path, allowDriveRoot: false, out string canonical, out string? invalid))
+        {
+            return MgmtResponse.Fail(id, invalid!);
+        }
+
+        if (!Directory.Exists(canonical))
+        {
+            return MgmtResponse.Fail(id, "The folder does not exist.");
+        }
+
+        await _folders.AddAsync(folder with { Path = canonical }, cancellationToken).ConfigureAwait(false);
+        _logger.LogInformation("Mgmt: protected folder added.");
         return MgmtResponse.Success(id);
     }
 
@@ -164,11 +265,34 @@ public sealed class MgmtRequestHandler : IMgmtHandler
             return MgmtResponse.Fail(id, error);
         }
 
-        await _whitelist.AddAsync(entry!, cancellationToken).ConfigureAwait(false);
-        _logger.LogInformation("Mgmt: whitelist entry upserted for {Sha}.", entry!.Sha256);
+        if (!IsSha256(entry!.Sha256))
+        {
+            return MgmtResponse.Fail(id, "A whitelist entry needs a 64-hex-character SHA-256.");
+        }
+
+        if (!Enum.IsDefined(entry.Action))
+        {
+            return MgmtResponse.Fail(id, "Unknown action value.");
+        }
+
+        var normalized = entry with
+        {
+            Sha256 = entry.Sha256.ToUpperInvariant(),
+            Source = string.IsNullOrWhiteSpace(entry.Source) ? "Admin" : entry.Source,
+            Timestamp = entry.Timestamp == default ? DateTimeOffset.UtcNow : entry.Timestamp,
+        };
+
+        await _whitelist.AddAsync(normalized, cancellationToken).ConfigureAwait(false);
+        _logger.LogInformation("Mgmt: whitelist entry upserted for {Sha}.", normalized.Sha256);
         return MgmtResponse.Success(id);
     }
 
+    /// <summary>
+    /// Flips an entry between Allow and Block. Moving to <b>Block</b> is a revocation: the WDAC allow rule
+    /// for that hash is removed first (otherwise the OS would keep allowing the file and the pipeline —
+    /// including this Block — would never be consulted again). The DB is only updated if the WDAC change
+    /// succeeded, so the panel never claims a revocation that is not in force.
+    /// </summary>
     private async Task<MgmtResponse> SetWhitelistActionAsync(Guid id, string? payload, CancellationToken cancellationToken)
     {
         if (!TryParse(payload, out SetActionPayload? arg, out string? error))
@@ -178,10 +302,26 @@ public sealed class MgmtRequestHandler : IMgmtHandler
 
         if (!Enum.IsDefined(typeof(PolicyAction), arg!.Action))
         {
-            return MgmtResponse.Fail(id, $"Unknown action value {arg.Action}.");
+            return MgmtResponse.Fail(id, "Unknown action value.");
         }
 
         var action = (PolicyAction)arg.Action;
+        WhitelistEntry? entry = await _whitelist.GetByIdAsync(arg.Id, cancellationToken).ConfigureAwait(false);
+        if (entry is null)
+        {
+            return MgmtResponse.Fail(id, "No whitelist entry with that id.");
+        }
+
+        if (action == PolicyAction.Block && IsSha256(entry.Sha256))
+        {
+            WdacUpdateResult revoke = await _wdac.RevokeAsync(entry.Sha256, entry.ProcessName, cancellationToken).ConfigureAwait(false);
+            if (!revoke.Success)
+            {
+                _logger.LogError("Mgmt: WDAC revoke failed for {Sha}: {Error}", entry.Sha256, revoke.Error);
+                return MgmtResponse.Fail(id, "The WDAC allow rule could not be revoked; the entry was left unchanged. See the agent log.");
+            }
+        }
+
         await _whitelist.SetActionAsync(arg.Id, action, cancellationToken).ConfigureAwait(false);
         _logger.LogInformation("Mgmt: whitelist entry {Id} set to {Action}.", arg.Id, action);
         return MgmtResponse.Success(id);
@@ -189,8 +329,8 @@ public sealed class MgmtRequestHandler : IMgmtHandler
 
     /// <summary>
     /// Applies the Advanced panel's per-app firewall checkboxes: real Windows Firewall rules via the
-    /// COM API, then the persisted state. The rule change is attempted first so the database never
-    /// claims a block that was not actually created.
+    /// COM API, then the persisted state. The path is always the one recorded for the row — a caller
+    /// cannot point the change at an arbitrary executable.
     /// </summary>
     private async Task<MgmtResponse> SetFirewallAsync(Guid id, string? payload, CancellationToken cancellationToken)
     {
@@ -202,17 +342,18 @@ public sealed class MgmtRequestHandler : IMgmtHandler
         VulnerableAppRecord? app = await _vulnApps.GetByIdAsync(arg!.Id, cancellationToken).ConfigureAwait(false);
         if (app is null)
         {
-            return MgmtResponse.Fail(id, $"No vulnerable-app row with id {arg.Id}.");
+            return MgmtResponse.Fail(id, "No vulnerable-app row with that id.");
         }
 
-        string appPath = string.IsNullOrWhiteSpace(arg.AppPath) ? app.AppPath : arg.AppPath;
-        if (!Path.IsPathRooted(appPath))
+        string appPath = app.AppPath;
+        if (!IsAcceptableLocalPath(appPath, allowDriveRoot: false, out string canonical, out _) || !File.Exists(canonical))
         {
             return MgmtResponse.Fail(
                 id,
-                $"'{appPath}' is a seeded name, not a full path. Firewall rules key on the full exe path, "
-                + "so this entry cannot be blocked until it is resolved to one.");
+                "This entry is a seeded name, not a full path to an existing executable. Firewall rules key on the full "
+                + "exe path, so this entry cannot be blocked until it is resolved to one.");
         }
+        appPath = canonical;
 
         try
         {
@@ -221,7 +362,7 @@ public sealed class MgmtRequestHandler : IMgmtHandler
         catch (Exception ex)
         {
             _logger.LogError(ex, "Mgmt: firewall change failed for {App}.", appPath);
-            return MgmtResponse.Fail(id, "Windows Firewall rejected the change: " + ex.Message);
+            return MgmtResponse.Fail(id, "Windows Firewall rejected the change; see the agent log for details.");
         }
 
         await _firewallRules.DeleteByAppAsync(appPath, cancellationToken).ConfigureAwait(false);
@@ -273,9 +414,9 @@ public sealed class MgmtRequestHandler : IMgmtHandler
         {
             value = JsonSerializer.Deserialize<T>(payload, IpcProtocol.Json);
         }
-        catch (JsonException ex)
+        catch (JsonException)
         {
-            error = "Malformed request payload: " + ex.Message;
+            error = "Malformed request payload.";
             return false;
         }
 

@@ -41,22 +41,32 @@ builder.Services.AddWardenStorage();
 builder.Services.AddWardenEtw();
 builder.Services.AddWardenTrust();
 builder.Services.AddWardenRules();
-// Pinned to the machine's enforced base policy (DefenderUI-created, survives its uninstall) so the
-// name-heuristic fallback can never attach the supplemental to the wrong base on this box.
+// The WDAC base policy the supplemental attaches to comes from configuration (the installer sets the
+// machine-scoped WARDEN_WDAC_BASE_POLICY_GUID); a machine's GUID must never be hard-coded in source, and an
+// unset/invalid value falls back to run-time discovery from CiTool.
 builder.Services.AddWardenWdac(options =>
 {
-    options.BasePolicyGuid = "{A25BED84-7550-4AC9-8E03-6BA6E19C766F}";
+    string? configured = Environment.GetEnvironmentVariable("WARDEN_WDAC_BASE_POLICY_GUID");
+    options.BasePolicyGuid = configured is not null && Guid.TryParse(configured.Trim().Trim('{', '}'), out Guid g) && g != Guid.Empty
+        ? "{" + g.ToString().ToUpperInvariant() + "}"
+        : null;
 });
+// IPC security refusals (rejected peer, non-admin Allow, squatted pipe, oversized frame) go to the tamper log.
+builder.Services.AddSingleton<IPipeSecurityEventSink, PipeSecurityTamperSink>();
 builder.Services.AddWardenIpcServer();
 
 // The management channel: the tray UI reads every panel and applies policy edits through the service,
 // because %ProgramData%\Warden is ACL-locked to SYSTEM + Administrators and a user-session UI cannot
-// open the SQLite file. Mutations are refused unless the calling token is an Administrators member.
+// open the SQLite file. The pipe DACL admits only elevated callers; mutations are additionally refused
+// unless the impersonated calling token is an Administrators member.
 builder.Services.AddSingleton<IMgmtHandler, MgmtRequestHandler>();
 builder.Services.AddWardenMgmtServer();
 
-// Phase 2 telemetry + reputation.
-builder.Services.AddWardenReputation();   // adds the VirusTotal IVerdictSource (pipeline tier 4)
+// Phase 2 telemetry + reputation. The VirusTotal tier stays silent until a key is configured.
+builder.Services.AddWardenReputation(options =>
+{
+    options.ApiKey = Environment.GetEnvironmentVariable("WARDEN_VT_API_KEY");
+});   // adds the VirusTotal IVerdictSource (pipeline tier 3)
 builder.Services.AddWardenAttackChain();
 builder.Services.AddWardenQuarantine();
 builder.Services.AddWardenAmsi();
@@ -74,9 +84,14 @@ builder.Services.AddWardenLlm(options =>
     // API key is set. NOTE: the CLI reads its login from the invoking user's profile — under the
     // LocalSystem service it fails auth and stays silent (fail-safe). To use it under the service, run
     // `claude setup-token` and expose the token to the service account; otherwise it is live when the
-    // agent runs in the user session. Opt in explicitly with WARDEN_ENABLE_CLAUDE_CLI=1.
+    // agent runs in the user session. Opt in explicitly with WARDEN_ENABLE_CLAUDE_CLI=1 and point
+    // WARDEN_CLAUDE_CLI_PATH at the executable (an absolute path — a SYSTEM service never resolves through PATH).
     options.EnableClaudeCli =
         string.Equals(Environment.GetEnvironmentVariable("WARDEN_ENABLE_CLAUDE_CLI"), "1", StringComparison.Ordinal);
+    if (Environment.GetEnvironmentVariable("WARDEN_CLAUDE_CLI_PATH") is { Length: > 0 } cliPath)
+    {
+        options.ClaudeCliPath = cliPath;
+    }
 });
 
 // Phase 5 — Advanced + Web Apps panels. The Web Apps classifier is always-ON (no toggle) and read-only.
@@ -87,7 +102,7 @@ builder.Services.AddWardenAntiExploit();
 builder.Services.AddWardenFirewall();
 
 // The decision pipeline is composed from every registered IVerdictSource, ordered cheap->expensive by
-// VerdictSourceKind (Rules -> TrustGate -> Whitelist -> ...). A source that throws is logged and skipped;
+// VerdictSourceKind (Rules -> Whitelist -> TrustGate -> ...). A source that throws is logged and skipped;
 // the pipeline still falls through to Prompt, so a broken tier can never become a silent allow.
 builder.Services.AddSingleton(sp =>
 {

@@ -8,6 +8,9 @@ namespace Warden.Tests;
 
 public sealed class VirusTotalClientTests
 {
+    // A well-formed SHA-256: the client refuses to query anything else.
+    private const string Sha = "ABCABCABCABCABCABCABCABCABCABCABCABCABCABCABCABCABCABCABCABCABCA";
+
     private static string StatsJson(int malicious, int harmless, int undetected) =>
         "{\"data\":{\"attributes\":{\"last_analysis_stats\":{\"malicious\":" + malicious
         + ",\"harmless\":" + harmless + ",\"undetected\":" + undetected
@@ -20,7 +23,7 @@ public sealed class VirusTotalClientTests
         var cache = new FakeCache();
         var client = Build(handler, cache, new ReputationOptions { ApiKey = "k", BlockThreshold = 5 });
 
-        var result = await client.EvaluateAsync(TestData.Context(sha256: "ABC"), default);
+        var result = await client.EvaluateAsync(TestData.Context(sha256: Sha), default);
 
         Assert.Equal(Verdict.Block, result.Verdict);
         Assert.Equal(VerdictSourceKind.VirusTotal, result.Source);
@@ -34,7 +37,7 @@ public sealed class VirusTotalClientTests
         var cache = new FakeCache();
         var client = Build(handler, cache, new ReputationOptions { ApiKey = "k" });
 
-        var result = await client.EvaluateAsync(TestData.Context(sha256: "ABC"), default);
+        var result = await client.EvaluateAsync(TestData.Context(sha256: Sha), default);
 
         Assert.Equal(Verdict.Unknown, result.Verdict);
         Assert.Equal(0, cache.Stored!.VtTotal);
@@ -46,7 +49,7 @@ public sealed class VirusTotalClientTests
         var handler = new StubHandler(_ => Ok(StatsJson(99, 0, 0)));
         var client = Build(handler, new FakeCache(), new ReputationOptions { ApiKey = null });
 
-        var result = await client.EvaluateAsync(TestData.Context(sha256: "ABC"), default);
+        var result = await client.EvaluateAsync(TestData.Context(sha256: Sha), default);
 
         Assert.Equal(Verdict.Unknown, result.Verdict);
         Assert.Equal(0, handler.CallCount); // disabled -> no request
@@ -58,13 +61,13 @@ public sealed class VirusTotalClientTests
         var handler = new StubHandler(_ => throw new HttpRequestException("network down"));
         var stale = new ReputationRecord
         {
-            Sha256 = "ABC", VtPositives = 12, VtTotal = 70,
+            Sha256 = Sha, VtPositives = 12, VtTotal = 70,
             CachedTs = DateTimeOffset.UtcNow.AddDays(-2), TtlSecs = 86400, // expired -> triggers a fetch
         };
         var cache = new FakeCache { Stored = stale };
         var client = Build(handler, cache, new ReputationOptions { ApiKey = "k", BlockThreshold = 5 });
 
-        var result = await client.EvaluateAsync(TestData.Context(sha256: "ABC"), default);
+        var result = await client.EvaluateAsync(TestData.Context(sha256: Sha), default);
 
         Assert.Equal(Verdict.Block, result.Verdict); // used the stale record despite the network failure
     }
@@ -76,7 +79,7 @@ public sealed class VirusTotalClientTests
         var options = new ReputationOptions { ApiKey = "k", AllowKnownClean = true, CleanMinEngines = 40 };
         var client = Build(handler, new FakeCache(), options);
 
-        var result = await client.EvaluateAsync(TestData.Context(sha256: "ABC"), default);
+        var result = await client.EvaluateAsync(TestData.Context(sha256: Sha), default);
 
         Assert.Equal(Verdict.Allow, result.Verdict);
     }
@@ -90,7 +93,7 @@ public sealed class VirusTotalClientTests
         var options = new ReputationOptions { ApiKey = "k", AllowKnownClean = true, CleanMinEngines = 40 };
         var client = Build(new StubHandler(_ => Ok(json)), new FakeCache(), options);
 
-        var result = await client.EvaluateAsync(TestData.Context(sha256: "ABC"), default);
+        var result = await client.EvaluateAsync(TestData.Context(sha256: Sha), default);
 
         Assert.Equal(Verdict.Unknown, result.Verdict); // 35 real engines < 40 -> not auto-allowed
     }

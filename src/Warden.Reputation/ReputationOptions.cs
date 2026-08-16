@@ -27,4 +27,17 @@ public sealed class ReputationOptions
 
     /// <summary>Per-day request budget (VirusTotal free tier is limited). 0 = unlimited.</summary>
     public int DailyRequestBudget { get; set; } = 480;
+
+    /// <summary>
+    /// Per-request timeout. The enforcement loop is serial, so a hung lookup would stall every later
+    /// decision — this must stay short (the HttpClient default of 100 s is far too long).
+    /// </summary>
+    public TimeSpan RequestTimeout { get; set; } = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// Oldest cached record that may still drive an <b>allow</b> while offline. Stale records are always
+    /// good enough to <i>block</i> on (a detection does not age out), but a months-old "0/70 clean" must not
+    /// keep auto-allowing a file forever.
+    /// </summary>
+    public TimeSpan MaxAllowStaleness { get; set; } = TimeSpan.FromDays(7);
 }

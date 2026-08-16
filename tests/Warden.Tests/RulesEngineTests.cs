@@ -125,5 +125,6 @@ public sealed class RulesEngineTests
         public Task<IReadOnlyList<WhitelistEntry>> GetAllAsync(int limit = 1000, CancellationToken ct = default) =>
             Task.FromResult((IReadOnlyList<WhitelistEntry>)Array.Empty<WhitelistEntry>());
         public Task SetActionAsync(long id, PolicyAction action, CancellationToken ct = default) => Task.CompletedTask;
+        public Task<WhitelistEntry?> GetByIdAsync(long id, CancellationToken ct = default) => Task.FromResult<WhitelistEntry?>(null);
     }
 }

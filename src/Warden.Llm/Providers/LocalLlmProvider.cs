@@ -31,7 +31,8 @@ public sealed class LocalLlmProvider : IVerdictLlmProvider
 
     public int Priority => 10;
 
-    public bool IsEnabled => _options.EnableLocal;
+    // Refuses a remote plain-http endpoint: the dossier and the bearer key would travel in clear text.
+    public bool IsEnabled => _options.EnableLocal && _options.LocalBaseAddressIsAcceptable;
 
     public async Task<LlmVerdict?> AnalyzeAsync(Dossier dossier, bool escalate, CancellationToken cancellationToken)
     {

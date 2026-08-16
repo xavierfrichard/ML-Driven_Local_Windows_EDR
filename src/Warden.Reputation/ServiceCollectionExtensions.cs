@@ -13,7 +13,11 @@ public static class ServiceCollectionExtensions
         configure?.Invoke(options);
         services.AddSingleton(options);
 
-        services.AddHttpClient("virustotal", client => client.BaseAddress = options.BaseAddress);
+        services.AddHttpClient("virustotal", client =>
+        {
+            client.BaseAddress = options.BaseAddress;
+            client.MaxResponseContentBufferSize = 4L * 1024 * 1024; // a hash report is a few KB
+        });
 
         services.AddSingleton<VirusTotalClient>();
         services.AddSingleton<IVerdictSource>(sp => sp.GetRequiredService<VirusTotalClient>());

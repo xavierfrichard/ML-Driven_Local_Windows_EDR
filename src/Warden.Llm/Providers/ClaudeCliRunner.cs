@@ -31,8 +31,21 @@ public interface IClaudeCliRunner
 
 /// <summary>Process-backed <see cref="IClaudeCliRunner"/>. Passes arguments via the argument list (no shell),
 /// so a dossier value can never be interpreted as a command.</summary>
+/// <remarks>
+/// <para><b>Absolute path only.</b> The executable is never resolved through PATH (a LocalSystem service with
+/// a user-writable PATH entry would be SYSTEM code execution).</para>
+/// <para><b>Contained child.</b> The service's own secrets (<c>WARDEN_*</c>, <c>ANTHROPIC_*</c>,
+/// <c>CLAUDE_CODE_*</c>) are removed from the child environment, the working directory is a fixed
+/// SYSTEM-owned location (Claude Code treats the CWD as its project root — it must never be an
+/// attacker-influenced folder), and captured output is capped.</para>
+/// </remarks>
 public sealed class ClaudeCliRunner : IClaudeCliRunner
 {
+    /// <summary>Per-stream capture cap.</summary>
+    public const int MaxCapturedChars = 1024 * 1024;
+
+    private static readonly string[] ScrubbedEnvironmentPrefixes = { "WARDEN_", "ANTHROPIC_", "CLAUDE_CODE_" };
+
     public async Task<ClaudeCliResult> RunAsync(
         string executablePath,
         IReadOnlyList<string> arguments,
@@ -40,6 +53,11 @@ public sealed class ClaudeCliRunner : IClaudeCliRunner
         TimeSpan timeout,
         CancellationToken cancellationToken)
     {
+        if (string.IsNullOrWhiteSpace(executablePath) || !Path.IsPathRooted(executablePath))
+        {
+            return new ClaudeCliResult(false, -1, string.Empty, "The claude CLI must be configured with an absolute path.");
+        }
+
         var psi = new ProcessStartInfo
         {
             FileName = executablePath,
@@ -50,10 +68,18 @@ public sealed class ClaudeCliRunner : IClaudeCliRunner
             CreateNoWindow = true,
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8,
+            WorkingDirectory = Environment.SystemDirectory,
         };
         foreach (string arg in arguments)
         {
             psi.ArgumentList.Add(arg);
+        }
+        foreach (string key in psi.Environment.Keys.ToList())
+        {
+            if (ScrubbedEnvironmentPrefixes.Any(p => key.StartsWith(p, StringComparison.OrdinalIgnoreCase)))
+            {
+                psi.Environment.Remove(key);
+            }
         }
 
         using var process = new Process { StartInfo = psi };
@@ -64,11 +90,11 @@ public sealed class ClaudeCliRunner : IClaudeCliRunner
 
         process.OutputDataReceived += (_, e) =>
         {
-            if (e.Data is null) { outDone.Release(); } else { stdout.AppendLine(e.Data); }
+            if (e.Data is null) { outDone.Release(); } else { Append(stdout, e.Data); }
         };
         process.ErrorDataReceived += (_, e) =>
         {
-            if (e.Data is null) { errDone.Release(); } else { stderr.AppendLine(e.Data); }
+            if (e.Data is null) { errDone.Release(); } else { Append(stderr, e.Data); }
         };
 
         try
@@ -117,6 +143,19 @@ public sealed class ClaudeCliRunner : IClaudeCliRunner
         {
             TryKill(process);
             return new ClaudeCliResult(false, -1, stdout.ToString(), ex.Message);
+        }
+    }
+
+    private static void Append(StringBuilder sb, string line)
+    {
+        lock (sb)
+        {
+            if (sb.Length >= MaxCapturedChars)
+            {
+                return;
+            }
+            int room = MaxCapturedChars - sb.Length;
+            sb.AppendLine(line.Length > room ? line[..room] : line);
         }
     }
 

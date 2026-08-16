@@ -67,6 +67,12 @@ public sealed class WardenWorker : BackgroundService
         _processStarts.ProcessStarted += _controller.RecordProcessStart;
         _processStarts.ProcessStarted += _tree.RecordStart;
         _blocks.BlockObserved += _controller.EnqueueBlock;
+        if (_blocks is CodeIntegritySession ciSession)
+        {
+            // A block Warden cannot parse is a block it never adjudicates — never let that be silent.
+            ciSession.ParseFailed += (id, ex) =>
+                _logger.LogWarning(ex, "Unparseable CodeIntegrity event {EventId}; the OS block stands but was not adjudicated.", id);
+        }
 
         // Telemetry panels: command-line recorder subscribes to the same process-start source; the
         // protected-folder monitor spins up its file watchers. Both are best-effort.
@@ -123,6 +129,22 @@ public sealed class WardenWorker : BackgroundService
                 await _tamperLog.LogAsync("data-dir-lockdown-incomplete",
                     $"dir={dirOk}, db={dbOk} for {_hardening.DataDirectory}", "critical", cancellationToken)
                     .ConfigureAwait(false);
+            }
+
+            // The binaries this LocalSystem process loads must not be writable by low-privilege accounts:
+            // otherwise anyone can swap Warden.Service.dll and be SYSTEM on the next (auto-restarted) start.
+            string binDir = AppContext.BaseDirectory;
+            IReadOnlyList<string>? writers = DataDirectoryHardener.LowPrivilegeWriters(binDir);
+            if (writers is null)
+            {
+                _logger.LogWarning("Could not read the DACL of the install directory {Dir}.", binDir);
+            }
+            else if (writers.Count > 0)
+            {
+                await _tamperLog.LogAsync("install-dir-writable",
+                    $"{binDir} grants write access to low-privilege principals: {string.Join(", ", writers.Distinct())}. "
+                    + @"Reinstall with installer/install.ps1 (which copies to %ProgramFiles%\Warden and locks it).",
+                    "critical", cancellationToken).ConfigureAwait(false);
             }
         }
         catch (Exception ex)

@@ -39,6 +39,18 @@ public sealed record VerdictContext(
     /// <summary>Mark-of-the-Web zone id meaning "no MOTW stream present".</summary>
     public const int NoMotw = -1;
 
+    /// <summary>
+    /// Path of the immutable snapshot the controller took of the image <i>before</i> inspection (in the
+    /// SYSTEM-only data directory), or null when no snapshot could be taken (oversized/unreadable). Every
+    /// byte-level fact in this context — <see cref="Sha256"/>, <see cref="Signer"/>, <see cref="Pe"/> — was
+    /// derived from the snapshot, and the WDAC allow rule is built from it, so the bytes judged are the bytes
+    /// allow-listed. Tiers that need the original location (path trust, MOTW, owner) use <see cref="ImagePath"/>.
+    /// </summary>
+    public string? SnapshotPath { get; init; }
+
+    /// <summary>The file to read bytes from: the snapshot when present, else the original path.</summary>
+    public string BytesPath => SnapshotPath ?? ImagePath;
+
     /// <summary>True when the file carries a Mark-of-the-Web indicating an internet/restricted origin.</summary>
     public bool IsFromInternet => MotwZone >= 3;
 

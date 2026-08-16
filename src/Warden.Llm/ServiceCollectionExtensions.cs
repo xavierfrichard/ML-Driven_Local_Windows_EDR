@@ -15,9 +15,23 @@ public static class ServiceCollectionExtensions
 
         // Named HTTP clients. The two Anthropic-wire providers share the Anthropic base address; the
         // local provider targets the OpenAI-compatible endpoint.
-        services.AddHttpClient(AnthropicApiProvider.HttpClient, c => c.BaseAddress = options.AnthropicBaseAddress);
-        services.AddHttpClient(ClaudeCodeOAuthProvider.HttpClient, c => c.BaseAddress = options.AnthropicBaseAddress);
-        services.AddHttpClient(LocalLlmProvider.HttpClient, c => c.BaseAddress = options.LocalBaseAddress);
+        // Every provider client caps the response body: a hostile or compromised endpoint (the local
+        // Ollama server being the least-trusted) must not be able to OOM the SYSTEM service.
+        services.AddHttpClient(AnthropicApiProvider.HttpClient, c =>
+        {
+            c.BaseAddress = options.AnthropicBaseAddress;
+            c.MaxResponseContentBufferSize = LlmOptions.MaxResponseBytes;
+        });
+        services.AddHttpClient(ClaudeCodeOAuthProvider.HttpClient, c =>
+        {
+            c.BaseAddress = options.AnthropicBaseAddress;
+            c.MaxResponseContentBufferSize = LlmOptions.MaxResponseBytes;
+        });
+        services.AddHttpClient(LocalLlmProvider.HttpClient, c =>
+        {
+            c.BaseAddress = options.LocalBaseAddress;
+            c.MaxResponseContentBufferSize = LlmOptions.MaxResponseBytes;
+        });
 
         services.AddSingleton<DossierBuilder>();
 

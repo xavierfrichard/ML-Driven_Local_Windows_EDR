@@ -30,8 +30,21 @@ public sealed class LlmOptions
     /// <summary>Enable the local OpenAI-compatible provider (offline, free).</summary>
     public bool EnableLocal { get; set; }
 
-    /// <summary>Base address of the local OpenAI-compatible server (Ollama's default shown).</summary>
+    /// <summary>
+    /// Base address of the local OpenAI-compatible server (Ollama's default shown). A plain-<c>http</c>
+    /// address is honoured only for loopback; a remote <c>http://</c> endpoint would send the dossier and
+    /// <see cref="LocalApiKey"/> in clear text and is refused by the provider.
+    /// </summary>
     public Uri LocalBaseAddress { get; set; } = new("http://localhost:11434/");
+
+    /// <summary>Hard cap on any provider's HTTP response body.</summary>
+    public const long MaxResponseBytes = 4L * 1024 * 1024;
+
+    /// <summary>True when <see cref="LocalBaseAddress"/> is https, or http to a loopback host.</summary>
+    public bool LocalBaseAddressIsAcceptable =>
+        LocalBaseAddress is not null
+        && (string.Equals(LocalBaseAddress.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
+            || (string.Equals(LocalBaseAddress.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) && LocalBaseAddress.IsLoopback));
 
     /// <summary>Model name/tag on the local server (e.g. a security-tuned Llama-3.1-8B). User-set.</summary>
     public string LocalModel { get; set; } = "foundation-sec-8b";
@@ -43,9 +56,10 @@ public sealed class LlmOptions
     // Shells out to the installed `claude` CLI in headless print mode (`claude -p --output-format
     // json`). This runs Claude Code AS THE PRODUCT under the user's own login, so it draws on a Claude
     // Pro/Max subscription rather than API-key billing — distinct from ClaudeCodeOAuth below, which
-    // extracts the session token and hits the raw API (against terms). The CLI is invoked with a
-    // no-tools sentinel and a constant system prompt; its free-text result is parsed for the verdict
-    // JSON, so the verdict is marked FromToolCall=false and can never auto-allow (block/prompt only).
+    // extracts the session token and hits the raw API (against terms). The CLI is invoked with no tools
+    // (--tools ""), no auto-discovered hooks/MCP/CLAUDE.md (--bare), auto-denied permissions and a constant
+    // system prompt; its free-text result is parsed for the verdict JSON, so the verdict is marked
+    // FromToolCall=false and can never auto-allow (block/prompt only).
     //
     // AUTH CAVEAT: the CLI reads the subscription login from the invoking user's profile. WardenAgent
     // runs as LocalSystem, which has no Claude login — under the service this provider will fail auth
@@ -56,8 +70,12 @@ public sealed class LlmOptions
     /// <summary>Enable the Claude Code CLI provider. Off by default; personal / subscription use.</summary>
     public bool EnableClaudeCli { get; set; }
 
-    /// <summary>Path to the <c>claude</c> executable. Resolved from PATH when left as the bare name.</summary>
-    public string ClaudeCliPath { get; set; } = "claude";
+    /// <summary>
+    /// <b>Absolute</b> path to the <c>claude</c> executable (e.g. <c>C:\Program Files\Claude\claude.exe</c>).
+    /// The provider stays disabled for a relative/bare value: a LocalSystem service must never resolve an
+    /// executable through the PATH search order (a user-writable PATH entry would be SYSTEM code execution).
+    /// </summary>
+    public string ClaudeCliPath { get; set; } = string.Empty;
 
     /// <summary>
     /// Per-invocation timeout for the CLI. Generous by default: a cold CLI start plus model latency runs

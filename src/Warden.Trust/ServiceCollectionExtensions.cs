@@ -26,8 +26,10 @@ public static class ServiceCollectionExtensions
         configure?.Invoke(options);
 
         services.AddSingleton(options);
-        services.AddSingleton<IFileInspector, FileInspector>();
-        services.AddSingleton<IVerdictSource, AuthenticodeTrustGate>();
+        services.AddSingleton<IFileInspector>(sp => new FileInspector(sp.GetRequiredService<TrustGateOptions>()));
+        services.AddSingleton<IVerdictSource>(sp => new AuthenticodeTrustGate(
+            sp.GetRequiredService<TrustGateOptions>(),
+            sp.GetRequiredService<IFileInspector>()));
 
         return services;
     }

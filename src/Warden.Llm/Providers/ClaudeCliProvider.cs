@@ -10,8 +10,9 @@ namespace Warden.Llm.Providers;
 /// This runs Claude Code <b>as the product</b> under the user's own login, so it draws on a Claude
 /// Pro/Max subscription — unlike <see cref="ClaudeCodeOAuthProvider"/>, which lifts the session token and
 /// posts to the raw API (against Anthropic's terms). The CLI is invoked with the constant analyst system
-/// prompt, the dossier on stdin, and a no-tools sentinel (<c>--allowed-tools __none__</c>) so an
-/// injection smuggled in the dossier can never make the agent run a tool. The verdict is parsed from the
+/// prompt, the dossier on stdin, no tools at all (<c>--tools ""</c>), no auto-discovered hooks/MCP/CLAUDE.md
+/// (<c>--bare</c>) and auto-deny permissions, so an injection smuggled in the dossier can never make the
+/// agent run a tool or reach the machine. The verdict is parsed from the
 /// CLI's free-text <c>result</c>, so it is marked <see cref="LlmVerdict.FromToolCall"/> = false and can
 /// only block or defer to the prompt — never auto-allow.
 /// </para>
@@ -22,9 +23,11 @@ namespace Warden.Llm.Providers;
 /// </summary>
 public sealed class ClaudeCliProvider : IVerdictLlmProvider
 {
-    // A single non-existent tool name as the entire allow-list: the CLI accepts the flag (it is
-    // variadic and rejects an empty value) while granting the agent no usable tool.
-    private const string NoToolsSentinel = "__none__";
+    // `--tools ""` is the documented way to remove every built-in tool from the session (as opposed to
+    // `--allowedTools`, which only pre-approves permission prompts and leaves read-only tools available).
+    // `--bare` additionally skips auto-discovery of hooks, MCP servers, skills and CLAUDE.md from the working
+    // directory, and `--permission-mode dontAsk` auto-denies anything that would still ask.
+    private const string NoTools = "";
 
     private readonly IClaudeCliRunner _runner;
     private readonly LlmOptions _options;
@@ -43,7 +46,13 @@ public sealed class ClaudeCliProvider : IVerdictLlmProvider
     // (0), which is the supported backend for any distributed build.
     public int Priority => 5;
 
-    public bool IsEnabled => _options.EnableClaudeCli && !string.IsNullOrWhiteSpace(_options.ClaudeCliPath);
+    // Enabled only with an ABSOLUTE executable path: a bare "claude" would be resolved through the PATH
+    // search order by a LocalSystem service, where a user-writable PATH entry means SYSTEM code execution.
+    public bool IsEnabled =>
+        _options.EnableClaudeCli
+        && !string.IsNullOrWhiteSpace(_options.ClaudeCliPath)
+        && Path.IsPathRooted(_options.ClaudeCliPath)
+        && !_options.ClaudeCliPath.StartsWith(@"\\", StringComparison.Ordinal);
 
     public async Task<LlmVerdict?> AnalyzeAsync(Dossier dossier, bool escalate, CancellationToken cancellationToken)
     {
@@ -98,10 +107,12 @@ public sealed class ClaudeCliProvider : IVerdictLlmProvider
         "-p",
         "--output-format", "json",
         "--model", model,
-        // CLI transport has no submit_verdict tool → the JSON-emitting prompt variant.
+        // CLI transport has no submit_verdict tool → the JSON-emitting prompt variant (replaces the whole
+        // system prompt; --exclude-dynamic-system-prompt-sections is ignored when --system-prompt is set).
         "--system-prompt", LlmAnalystPrompt.CliSystemPrompt,
-        "--allowed-tools", NoToolsSentinel,
-        "--exclude-dynamic-system-prompt-sections",
+        "--tools", NoTools,
+        "--bare",
+        "--permission-mode", "dontAsk",
     };
 
     private static string Trim(string s) => s.Length > 400 ? s[..400] : s;

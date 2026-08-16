@@ -5,16 +5,22 @@ namespace Warden.Core;
 /// the numeric values reflect evaluation order but the pipeline order is defined by registration,
 /// not by this enum.
 /// </summary>
+/// <remarks>
+/// <b>Whitelist runs before TrustGate on purpose.</b> The whitelist holds explicit prior decisions —
+/// including a user's or administrator's "keep blocked" — and an explicit prior decision must outrank
+/// any automatic fast-allow. With the reverse order a validly-signed file the user had blocked would be
+/// re-allowed by the trust gate and the Block overwritten.
+/// </remarks>
 public enum VerdictSourceKind
 {
     /// <summary>User-defined allow/block rules (hash, signature, folder, extension).</summary>
     Rules = 0,
 
-    /// <summary>Authenticode trust gate: known-good signer from a trusted path.</summary>
-    TrustGate,
-
     /// <summary>Prior allow/block already recorded for this file or publisher.</summary>
     Whitelist,
+
+    /// <summary>Authenticode trust gate: known-good signer from a trusted path.</summary>
+    TrustGate,
 
     /// <summary>VirusTotal hash reputation (cached, offline-tolerant).</summary>
     VirusTotal,

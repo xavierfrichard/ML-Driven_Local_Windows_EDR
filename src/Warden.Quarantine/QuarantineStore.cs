@@ -8,8 +8,7 @@ namespace Warden.Quarantine;
 /// <summary>Configuration for the quarantine store.</summary>
 public sealed class QuarantineOptions
 {
-    public string QuarantineDir { get; set; } = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Warden", "Quarantine");
+    public string QuarantineDir { get; set; } = Warden.Core.WardenPaths.Under("Quarantine");
 }
 
 /// <summary>
@@ -104,6 +103,16 @@ public sealed class QuarantineStore : IQuarantineStore
                 return false;
             }
 
+            // The destination comes from the database (ultimately from the path the sample was found at):
+            // SYSTEM must not be steerable into writing a file wherever that string says. Require a rooted,
+            // canonical local path whose parent directory exists, is not a reparse point (junction to
+            // System32 etc.), and — since it was quarantined from there — is not a privileged location.
+            if (!IsSafeRestoreTarget(record.OriginalPath, out string canonical, out string? why))
+            {
+                _logger.LogError("Refusing to restore quarantine record {Id} to {Path}: {Why}", recordId, record.OriginalPath, why);
+                return false;
+            }
+
             // The quarantined file is locked to SYSTEM+Administrators. Re-grant access by restoring the
             // original ACL onto it BEFORE moving it back — otherwise the move fails for lack of DELETE on
             // the source. The store runs as SYSTEM (or is the owner), so it has WRITE_DAC to do this.
@@ -112,7 +121,20 @@ public sealed class QuarantineStore : IQuarantineStore
                 TryApplySddl(new FileInfo(record.QuarantinePath), record.RestoreAclSddl);
             }
 
-            File.Move(record.QuarantinePath, record.OriginalPath);
+            // Verify the bytes are what was quarantined before putting them back on disk (after the ACL is
+            // restored so the read is possible); on a mismatch re-lock the file and refuse.
+            if (!string.IsNullOrEmpty(record.Sha256))
+            {
+                string? actual = TryComputeSha256(record.QuarantinePath);
+                if (actual is null || !string.Equals(actual, record.Sha256, StringComparison.OrdinalIgnoreCase))
+                {
+                    _logger.LogError("Refusing to restore quarantine record {Id}: stored bytes do not match the recorded hash.", recordId);
+                    try { LockDown(record.QuarantinePath); } catch (Exception ex) { _logger.LogWarning(ex, "Could not re-lock {Path}.", record.QuarantinePath); }
+                    return false;
+                }
+            }
+
+            File.Move(record.QuarantinePath, canonical);
 
             await _repo.MarkRestoredAsync(recordId, cancellationToken).ConfigureAwait(false);
             _logger.LogInformation("Restored quarantined file to {Path}", record.OriginalPath);
@@ -123,6 +145,84 @@ public sealed class QuarantineStore : IQuarantineStore
             _logger.LogError(ex, "Restore failed for quarantine record {Id}", recordId);
             return false;
         }
+    }
+
+    /// <summary>
+    /// A restore target is acceptable when it is a rooted, canonical local path (no UNC/device form), its
+    /// parent directory exists and is not a reparse point, no file already occupies it, and it does not
+    /// point into the Windows or Program Files trees (a quarantined sample never legitimately came from there
+    /// with a user-writable owner, and SYSTEM must not be used to plant files in privileged locations).
+    /// </summary>
+    internal static bool IsSafeRestoreTarget(string? original, out string canonical, out string? reason)
+    {
+        canonical = string.Empty;
+        reason = null;
+        if (string.IsNullOrWhiteSpace(original))
+        {
+            reason = "no original path recorded";
+            return false;
+        }
+
+        try
+        {
+            canonical = Path.GetFullPath(original);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            reason = "original path is not a valid local path";
+            return false;
+        }
+
+        if (!Path.IsPathRooted(canonical) || canonical.StartsWith(@"\\", StringComparison.Ordinal))
+        {
+            reason = "original path is not a rooted local path";
+            return false;
+        }
+
+        string? parent = Path.GetDirectoryName(canonical);
+        if (string.IsNullOrEmpty(parent) || !Directory.Exists(parent))
+        {
+            reason = "original directory no longer exists";
+            return false;
+        }
+
+        try
+        {
+            if ((new DirectoryInfo(parent).Attributes & FileAttributes.ReparsePoint) != 0)
+            {
+                reason = "original directory is a reparse point (junction/symlink)";
+                return false;
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            reason = "original directory could not be inspected";
+            return false;
+        }
+
+        if (File.Exists(canonical) || Directory.Exists(canonical))
+        {
+            reason = "something already exists at the original path";
+            return false;
+        }
+
+        foreach (Environment.SpecialFolder privileged in new[]
+                 {
+                     Environment.SpecialFolder.Windows,
+                     Environment.SpecialFolder.ProgramFiles,
+                     Environment.SpecialFolder.ProgramFilesX86,
+                 })
+        {
+            string root = Environment.GetFolderPath(privileged);
+            if (!string.IsNullOrEmpty(root)
+                && canonical.StartsWith(root.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+            {
+                reason = "refusing to restore into a privileged system location";
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private void LockDown(string path)
