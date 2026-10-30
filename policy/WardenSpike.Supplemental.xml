@@ -39,11 +39,14 @@
   * PolicyType="Supplemental Policy" selects the multiple-policy format
     and marks this as a supplemental (not a base).
   * PolicyID is this supplemental's OWN unique GUID (fixed below). The
-    compiled binary MUST be named "{PolicyID}.cip".
+    compiled binary MUST be named "{PolicyID}.cip". It is NOT the Warden
+    service's allow-list supplemental ID ({7A4D1C0A-5B2E-4F6A-9C3D-000000000001}):
+    two policies with one PolicyID overwrite each other on every deploy, and the
+    deploy script refuses to run if this file carries the service's ID.
   * BasePolicyID is the PolicyID of the BASE policy this supplemental expands.
-    Because the base is generated fresh (Set-CIPolicyIdInfo -ResetPolicyID)
-    every deployment, its GUID is not known until deploy time. The value below
-    is a PLACEHOLDER; the deploy script fills it in via
+    The deploy script regenerates the spike base on every run under its fixed
+    ID {77EEF7EE-839E-49F6-ADF1-3BD853A234B1}. The value below is a
+    PLACEHOLDER; the deploy script fills it in via
     "Set-CIPolicyIdInfo -SupplementsBasePolicyID {baseGuid}".
   * A supplemental expands EXACTLY ONE base. The base must opt in to being
     supplemented with rule option 17 (Enabled:Allow Supplemental Policies);
@@ -150,7 +153,7 @@
     Shipped supplemental examples place these AFTER HvciOptions, so we do too.
 
     BasePolicyID: all-zeros PLACEHOLDER. The deploy script overwrites it with the
-    fresh base policy's PolicyID via Set-CIPolicyIdInfo -SupplementsBasePolicyID,
+    spike base policy's PolicyID via Set-CIPolicyIdInfo -SupplementsBasePolicyID,
     and then REFUSES to compile/deploy if the linkage is still all-zeros (an
     all-zeros BasePolicyID supplements no real base and is inert). Left as-is here
     only so hand-deploys are inert rather than surprising.
@@ -159,11 +162,11 @@
 
   <!-- PolicyID: this supplemental's OWN fixed GUID. Stable across deployments
        so redeploys UPDATE this supplemental rather than stacking new ones.
-       The compiled binary must be named "{7A4D1C0A-5B2E-4F6A-9C3D-000000000001}.cip". -->
-  <PolicyID>{7A4D1C0A-5B2E-4F6A-9C3D-000000000001}</PolicyID>
+       The compiled binary must be named "{591A5539-3983-4C77-92B7-583045489C23}.cip". -->
+  <PolicyID>{591A5539-3983-4C77-92B7-583045489C23}</PolicyID>
 
   <!-- Friendly Name/Id strings surfaced by CiTool -list-policies. The deploy
-       and remove scripts match on the "Warden" prefix to find these. -->
+       remove script matches "Warden Spike" to find these. -->
   <Settings>
     <Setting Provider="PolicyInfo" Key="Information" ValueName="Name">
       <Value><String>Warden Spike Supplemental (Allow user binaries)</String></Value>

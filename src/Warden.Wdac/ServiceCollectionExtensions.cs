@@ -11,6 +11,7 @@ public static class ServiceCollectionExtensions
         configure?.Invoke(options);
         services.AddSingleton(options);
         services.AddSingleton<ProcessRunner>();
+        services.AddSingleton<IWdacPolicyTools, ConfigCiPolicyTools>();
         services.AddSingleton<IWdacAllowlistManager, WdacAllowlistManager>();
         return services;
     }

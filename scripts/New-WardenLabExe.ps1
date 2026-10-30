@@ -18,10 +18,10 @@
 
  ------------------------------------------------------------------------------
  VM-ONLY RUN SEQUENCE (elevated PowerShell inside the isolated Windows 11 VM):
-   1. .\scripts\New-WardenLabExe.ps1
+   1. .\scripts\New-WardenLabExe.ps1                                        # prints <hash>
    2. .\scripts\Deploy-WardenSpikePolicy.ps1 -IUnderstandVmOnly              # audit base
-   3. .\scripts\Deploy-WardenSpikePolicy.ps1 -IUnderstandVmOnly -DeploySupplemental
-   4. .\scripts\Deploy-WardenSpikePolicy.ps1 -IUnderstandVmOnly -Enforce     # optional
+   3. .\scripts\Deploy-WardenSpikePolicy.ps1 -IUnderstandVmOnly -DeploySupplemental -LabExeSha256 <hash>
+   4. .\scripts\Deploy-WardenSpikePolicy.ps1 -IUnderstandVmOnly -Enforce -IHaveReviewedAuditEvents -LabExeSha256 <hash>   # optional
    5. .\scripts\Remove-WardenSpikePolicy.ps1 -IUnderstandVmOnly              # rollback
  ------------------------------------------------------------------------------
 #>
@@ -121,11 +121,13 @@ if ($PSCmdlet.ShouldProcess($exePath, 'Compile lab exe')) {
         throw "Compilation reported success but $exePath does not exist."
     }
 
-    # Flat SHA-256 for the operator's reference (NOTE: WDAC uses the Authenticode
-    # image hash, which the deploy script computes with New-CIPolicy - this flat
-    # hash is only a human sanity check, not what goes into the policy).
+    # Flat SHA-256: the PIN the deploy script checks before it allow-lists the
+    # exe (it lives in the user's profile, so its bytes are checked, not trusted).
+    # WDAC itself uses the Authenticode image hash, which the deploy script
+    # computes with New-CIPolicy from the pinned copy.
     $flat = (Get-FileHash -LiteralPath $exePath -Algorithm SHA256).Hash
     Write-Ok  "Built lab exe: $exePath"
-    Write-Host "[lab] Flat SHA-256 (reference only): $flat" -ForegroundColor DarkGray
+    Write-Host "[lab] SHA-256 pin: $flat" -ForegroundColor Green
+    Write-Host "[lab] Pass it to the deploy script:  -LabExeSha256 $flat" -ForegroundColor DarkGray
     Write-Host "[lab] Run it to test:  & '$exePath'" -ForegroundColor DarkGray
 }
