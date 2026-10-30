@@ -33,7 +33,9 @@ if ($Thumbprint -notmatch '^[0-9A-Fa-f]{40}$') { throw "-Thumbprint must be a 40
 
 # Prefer the SDK's own copy (newest version by real version-number ordering, not string ordering: 10.0.9
 # must not beat 10.0.19041). Only fall back to PATH when no SDK is installed.
-$kitsRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
+# The x86 Program Files folder comes from the known-folder API, not ${env:ProgramFiles(x86)}, which a
+# user's HKCU\Environment can point at a folder holding their own signtool.exe.
+$kitsRoot = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFilesX86)) 'Windows Kits\10\bin'
 $signtoolPath = Get-ChildItem -LiteralPath $kitsRoot -Directory -ErrorAction SilentlyContinue |
     Where-Object { $_.Name -match '^\d+(\.\d+){1,3}$' } |
     Sort-Object { [Version] $_.Name } -Descending |
@@ -62,3 +64,4 @@ foreach ($t in $targets) {
 }
 
 Write-Host "Signed $($targets.Count) file(s). Verify with:  signtool verify /pa /all <file>"
+Write-Host "Install with:  .\installer\install.ps1 ... -SignerThumbprint $($Thumbprint.ToUpperInvariant())  (checks every Warden*.dll/exe before and after the copy)"

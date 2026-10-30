@@ -39,11 +39,12 @@ public sealed class TamperLog : ITamperLog
 
         try
         {
+            // The Serilog enricher escapes the log copy; the tamper_log row is shown in the UI, so escape it too.
             await _repo.AddAsync(new TamperEventRecord
             {
                 Timestamp = DateTimeOffset.UtcNow,
-                Category = category,
-                Detail = detail,
+                Category = ControlCharacterSanitizingEnricher.Sanitize(category),
+                Detail = detail is null ? null : ControlCharacterSanitizingEnricher.Sanitize(detail),
                 Severity = severity,
             }, cancellationToken).ConfigureAwait(false);
         }
