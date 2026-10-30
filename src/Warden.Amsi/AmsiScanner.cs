@@ -135,16 +135,22 @@ public sealed class AmsiScanner : IAmsiScanner, IDisposable
         }
     }
 
+    // amsi.dll is loaded from System32 only, never from the application folder or PATH, so a
+    // planted amsi.dll next to the binaries cannot be loaded into the service.
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [DllImport("amsi.dll", CharSet = CharSet.Unicode)]
     private static extern int AmsiInitialize(string appName, out IntPtr amsiContext);
 
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [DllImport("amsi.dll")]
     private static extern void AmsiUninitialize(IntPtr amsiContext);
 
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [DllImport("amsi.dll", CharSet = CharSet.Unicode)]
     private static extern int AmsiScanBuffer(
         IntPtr amsiContext, byte[] buffer, uint length, string contentName, IntPtr amsiSession, out int result);
 
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [DllImport("amsi.dll", CharSet = CharSet.Unicode)]
     private static extern int AmsiScanString(
         IntPtr amsiContext, string content, string contentName, IntPtr amsiSession, out int result);
