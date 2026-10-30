@@ -51,6 +51,15 @@ public sealed record VerdictContext(
     /// <summary>The file to read bytes from: the snapshot when present, else the original path.</summary>
     public string BytesPath => SnapshotPath ?? ImagePath;
 
+    /// <summary>
+    /// True when every byte-level fact here (<see cref="Sha256"/>, <see cref="Signer"/>, <see cref="Pe"/>)
+    /// came from one immutable snapshot, so the bytes judged are the bytes WDAC will allow-list. When false,
+    /// those facts were read from the mutable original (or skipped), and the pipeline refuses an Allow from
+    /// any tier that judges content (see <see cref="DecisionPipeline.MayAllowUnpinned"/>). Derived, not
+    /// settable, so a context can only claim pinning by actually carrying a snapshot.
+    /// </summary>
+    public bool IsBytePinned => !string.IsNullOrEmpty(SnapshotPath);
+
     /// <summary>True when the file carries a Mark-of-the-Web indicating an internet/restricted origin.</summary>
     public bool IsFromInternet => MotwZone >= 3;
 

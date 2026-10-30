@@ -159,32 +159,75 @@ public sealed class FileInspector : IFileInspector
         string adsPath = path + ":Zone.Identifier";
         try
         {
-            using var fs = new FileStream(adsPath, FileMode.Open, FileAccess.Read, FileShare.Read);
-            using var reader = new StreamReader(fs);
-            bool inZoneTransfer = false;
-            string? line;
-            while ((line = reader.ReadLine()) is not null)
+            // The stream is attacker-controlled: read at most MaxZoneIdentifierBytes, never ReadLine() over
+            // an unbounded stream (a multi-GB stream with no newline would exhaust memory).
+            string text;
+            bool oversized;
+            using (var fs = new FileStream(adsPath, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize: 1))
             {
-                line = line.Trim();
-                if (line.StartsWith('['))
+                byte[] buffer = new byte[MaxZoneIdentifierBytes];
+                int total = 0;
+                int read;
+                while (total < buffer.Length && (read = fs.Read(buffer, total, buffer.Length - total)) > 0)
                 {
-                    inZoneTransfer = line.Equals("[ZoneTransfer]", StringComparison.OrdinalIgnoreCase);
+                    total += read;
                 }
-                else if (inZoneTransfer && line.StartsWith("ZoneId", StringComparison.OrdinalIgnoreCase))
-                {
-                    int eq = line.IndexOf('=');
-                    if (eq > 0 && int.TryParse(line[(eq + 1)..].Trim(), out int zone))
-                    {
-                        return zone;
-                    }
-                }
+                oversized = total == buffer.Length && fs.ReadByte() >= 0;
+                text = DecodeZoneIdentifier(buffer.AsSpan(0, total));
             }
-            return VerdictContext.NoMotw; // stream present but no ZoneId key
+
+            int zone = ParseZoneId(text);
+            // A padded stream that hides its ZoneId past the cap is itself anomalous: treat it as Internet
+            // rather than as "no MOTW" so padding cannot make a download look local.
+            return zone == VerdictContext.NoMotw && oversized ? InternetZone : zone;
         }
         catch (FileNotFoundException) { return VerdictContext.NoMotw; }      // no ADS -> no MOTW
         catch (DirectoryNotFoundException) { return VerdictContext.NoMotw; }
         catch (IOException) { return VerdictContext.NoMotw; }                // e.g. non-NTFS volume
         catch (UnauthorizedAccessException) { return VerdictContext.NoMotw; }
+    }
+
+    /// <summary>Largest prefix of a <c>Zone.Identifier</c> stream that is read. Real ones are a few hundred bytes.</summary>
+    internal const int MaxZoneIdentifierBytes = 4096;
+
+    /// <summary>URLZONE_INTERNET.</summary>
+    private const int InternetZone = 3;
+
+    private static string DecodeZoneIdentifier(ReadOnlySpan<byte> bytes)
+    {
+        // Browsers write ASCII/UTF-8; some tools write UTF-16LE with a BOM.
+        if (bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE)
+        {
+            return System.Text.Encoding.Unicode.GetString(bytes[2..]);
+        }
+        if (bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
+        {
+            bytes = bytes[3..];
+        }
+        return System.Text.Encoding.UTF8.GetString(bytes);
+    }
+
+    /// <summary>Finds <c>ZoneId</c> under <c>[ZoneTransfer]</c> in an already-bounded stream prefix.</summary>
+    internal static int ParseZoneId(string text)
+    {
+        bool inZoneTransfer = false;
+        foreach (string rawLine in text.Split('\n'))
+        {
+            string line = rawLine.Trim();
+            if (line.StartsWith('['))
+            {
+                inZoneTransfer = line.Equals("[ZoneTransfer]", StringComparison.OrdinalIgnoreCase);
+            }
+            else if (inZoneTransfer && line.StartsWith("ZoneId", StringComparison.OrdinalIgnoreCase))
+            {
+                int eq = line.IndexOf('=');
+                if (eq > 0 && int.TryParse(line[(eq + 1)..].Trim(), out int zone))
+                {
+                    return zone;
+                }
+            }
+        }
+        return VerdictContext.NoMotw; // stream present but no ZoneId key
     }
 
     /// <inheritdoc />

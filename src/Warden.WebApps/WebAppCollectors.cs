@@ -10,6 +10,13 @@ public interface IWebAppInputCollector
 {
     /// <summary>Read the PE imports, directory siblings, version resources, and URL-handler registration.</summary>
     WebAppStaticInput CollectStatic(string appPath);
+
+    /// <summary>
+    /// Same as <see cref="CollectStatic(string)"/>, but reads file content (PE imports, version resources)
+    /// from <paramref name="bytesPath"/> — the immutable snapshot of <paramref name="appPath"/> when one
+    /// exists — while location facts (siblings, URL handler) still come from <paramref name="appPath"/>.
+    /// </summary>
+    WebAppStaticInput CollectStatic(string appPath, string? bytesPath) => CollectStatic(appPath);
 }
 
 /// <summary>Collects the runtime inputs the scorer needs for a running app.</summary>
@@ -29,12 +36,21 @@ public sealed class WebAppInputCollector : IWebAppInputCollector
 {
     private const int MaxSiblingFiles = 512;
 
-    public WebAppStaticInput CollectStatic(string appPath)
+    /// <summary>
+    /// Largest image whose imports are parsed (the same cap the ML tier uses). The scan runs for every
+    /// block on the single decision thread, so an attacker-padded multi-GB image must not be read whole.
+    /// </summary>
+    public const long MaxImportScanBytes = 64L * 1024 * 1024;
+
+    public WebAppStaticInput CollectStatic(string appPath) => CollectStatic(appPath, bytesPath: null);
+
+    public WebAppStaticInput CollectStatic(string appPath, string? bytesPath)
     {
+        string contentPath = string.IsNullOrEmpty(bytesPath) ? appPath : bytesPath;
         string imageName = string.IsNullOrEmpty(appPath) ? string.Empty : Path.GetFileName(appPath).ToLowerInvariant();
-        ImmutableArray<string> modules = ImportedModules(appPath);
+        ImmutableArray<string> modules = ImportedModules(contentPath);
         ImmutableArray<string> siblings = Siblings(appPath);
-        (string? originalFilename, string? productName) = VersionInfo(appPath);
+        (string? originalFilename, string? productName) = VersionInfo(contentPath);
         bool isUrlHandler = IsHttpHandler(appPath);
 
         return new WebAppStaticInput(
@@ -45,8 +61,8 @@ public sealed class WebAppInputCollector : IWebAppInputCollector
     {
         try
         {
-            byte[] bytes = File.ReadAllBytes(appPath);
-            if (!PeNet.PeFile.IsPeFile(bytes))
+            byte[]? bytes = ReadCapped(appPath, MaxImportScanBytes);
+            if (bytes is null || !PeNet.PeFile.IsPeFile(bytes))
             {
                 return ImmutableArray<string>.Empty;
             }
@@ -62,6 +78,30 @@ public sealed class WebAppInputCollector : IWebAppInputCollector
         {
             return ImmutableArray<string>.Empty;
         }
+    }
+
+    /// <summary>
+    /// Reads the whole file through one handle when it is at most <paramref name="maxBytes"/>, else null.
+    /// The length is taken from the open handle and the read never goes past it, so a file that grows
+    /// after the check cannot push the allocation over the cap.
+    /// </summary>
+    public static byte[]? ReadCapped(string path, long maxBytes)
+    {
+        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize: 1);
+        long length = fs.Length;
+        if (length <= 0 || length > maxBytes)
+        {
+            return null;
+        }
+
+        byte[] bytes = new byte[length];
+        int total = 0;
+        int read;
+        while (total < bytes.Length && (read = fs.Read(bytes, total, bytes.Length - total)) > 0)
+        {
+            total += read;
+        }
+        return total == bytes.Length ? bytes : null;
     }
 
     private static ImmutableArray<string> Siblings(string appPath)

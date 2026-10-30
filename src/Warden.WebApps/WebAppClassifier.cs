@@ -29,9 +29,16 @@ public sealed class WebAppClassifier
     }
 
     /// <summary>Classify an app from its static signals and cache the result (idempotent by path).</summary>
-    public async Task<WebAppClassification> ClassifyAsync(string appPath, CancellationToken cancellationToken = default)
+    public Task<WebAppClassification> ClassifyAsync(string appPath, CancellationToken cancellationToken = default) =>
+        ClassifyAsync(appPath, bytesPath: null, cancellationToken);
+
+    /// <summary>
+    /// Classify an app, reading its content from <paramref name="bytesPath"/> (the enforcement snapshot)
+    /// when given, and cache the result under <paramref name="appPath"/>.
+    /// </summary>
+    public async Task<WebAppClassification> ClassifyAsync(string appPath, string? bytesPath, CancellationToken cancellationToken = default)
     {
-        WebAppStaticInput input = _collector.CollectStatic(appPath);
+        WebAppStaticInput input = _collector.CollectStatic(appPath, bytesPath);
         WebAppClassification result = WebAppScorer.ClassifyStatic(appPath, input, DateTimeOffset.UtcNow);
         await PersistAsync(result, cancellationToken).ConfigureAwait(false);
         return result;
