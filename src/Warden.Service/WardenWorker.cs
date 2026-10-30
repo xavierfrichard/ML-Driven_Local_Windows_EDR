@@ -61,6 +61,9 @@ public sealed class WardenWorker : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        // Before anything reads or writes the data directory (database, WDAC files, ML model, quarantine).
+        PrepareDataDirectory();
+
         _database.Initialize();
         _logger.LogInformation("Warden database ready at {Path}", _database.DatabasePath);
 
@@ -108,9 +111,44 @@ public sealed class WardenWorker : BackgroundService
     }
 
     /// <summary>
-    /// Lock the data directory + database to SYSTEM + Administrators (self-protection), but only when the
-    /// installer has enabled it (<c>WARDEN_ENFORCE_HARDENING=1</c>). A plain dev/console run does nothing.
-    /// Best-effort: an ACL failure is recorded as a tamper event and the service keeps running.
+    /// Makes sure the data directory can be trusted before the service uses it, and stops the service if it
+    /// cannot (fail closed: a database or WDAC file someone else can edit could hold Allow rows).
+    /// <list type="bullet">
+    /// <item>Installed service (<c>WARDEN_ENFORCE_HARDENING=1</c>): refuse any junction, symlink, mount
+    /// point or hard link in the tree, then reset the owner and ACLs of the whole tree to SYSTEM +
+    /// Administrators and verify the result.</item>
+    /// <item>Dev run: only refuse redirects; nothing is re-ACLed.</item>
+    /// </list>
+    /// A failure is logged as a critical tamper event to the log only: the <c>tamper_log</c> table lives in
+    /// the directory that just failed. The exit code is set to 1 so the service's recovery actions retry.
+    /// </summary>
+    private void PrepareDataDirectory()
+    {
+        string dir = _hardening.DataDirectory;
+        DataDirectoryReport report = _hardening.EnforceOnStartup
+            ? _dirHardener.HardenDataDirectory(dir)
+            : _dirHardener.VerifyDataDirectory(dir, requireTrustedOwnership: false);
+
+        if (report.Success)
+        {
+            if (_hardening.EnforceOnStartup)
+            {
+                _logger.LogInformation("Data directory {Dir}: owner and access lists reset to SYSTEM + Administrators.", dir);
+            }
+            return;
+        }
+
+        string category = report.Redirects.Count > 0 ? "data-dir-redirect" : "data-dir-untrusted";
+        _logger.LogCritical("TAMPER [{Category}] Refusing to use the data directory {Dir}: {Detail}", category, dir, report.Summary());
+        Environment.ExitCode = 1;
+        throw new InvalidOperationException($"Refusing to use the data directory {dir} ({category}).");
+    }
+
+    /// <summary>
+    /// Installed service only (<c>WARDEN_ENFORCE_HARDENING=1</c>): lock the database file and check that
+    /// nobody but SYSTEM, Administrators or TrustedInstaller owns or can write the code this LocalSystem
+    /// process loads (its binaries, <c>dotnet.exe</c>, <c>hostfxr</c>, the shared runtime, and their parent
+    /// folders). Each problem is a critical tamper event; the service keeps running.
     /// </summary>
     private async Task ApplyStartupHardeningAsync(CancellationToken cancellationToken)
     {
@@ -121,39 +159,28 @@ public sealed class WardenWorker : BackgroundService
 
         try
         {
-            bool dirOk = _dirHardener.HardenDirectory(_hardening.DataDirectory);
-            bool dbOk = _dirHardener.HardenFile(_database.DatabasePath);
-
-            if (dirOk && dbOk)
-            {
-                _logger.LogInformation("Self-protection ACLs applied to {Dir}.", _hardening.DataDirectory);
-            }
-            else
+            if (!_dirHardener.HardenFile(_database.DatabasePath))
             {
                 await _tamperLog.LogAsync("data-dir-lockdown-incomplete",
-                    $"dir={dirOk}, db={dbOk} for {_hardening.DataDirectory}", "critical", cancellationToken)
+                    $"Could not lock the database file {_database.DatabasePath}.", "critical", cancellationToken)
                     .ConfigureAwait(false);
             }
 
-            // The binaries this LocalSystem process loads must not be writable by low-privilege accounts:
-            // otherwise anyone can swap Warden.Service.dll and be SYSTEM on the next (auto-restarted) start.
-            string binDir = AppContext.BaseDirectory;
-            IReadOnlyList<string>? writers = DataDirectoryHardener.LowPrivilegeWriters(binDir);
-            if (writers is null)
-            {
-                _logger.LogWarning("Could not read the DACL of the install directory {Dir}.", binDir);
-            }
-            else if (writers.Count > 0)
+            string? runtimeDir = Path.GetDirectoryName(typeof(object).Assembly.Location);
+            IReadOnlyList<string> problems = InstallSelfCheck.FindProblems(
+                AppContext.BaseDirectory, Environment.ProcessPath, runtimeDir);
+            foreach (string problem in problems)
             {
                 await _tamperLog.LogAsync("install-dir-writable",
-                    $"{binDir} grants write access to low-privilege principals: {string.Join(", ", writers.Distinct())}. "
-                    + @"Reinstall with installer/install.ps1 (which copies to %ProgramFiles%\Warden and locks it).",
+                    problem + @" Reinstall with installer/install.ps1 (which copies to %ProgramFiles%\Warden and locks it).",
                     "critical", cancellationToken).ConfigureAwait(false);
             }
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning(ex, "Startup hardening failed (non-fatal).");
+            _logger.LogError(ex, "Startup self-check failed.");
+            await _tamperLog.LogAsync("startup-self-check-failed", ex.GetType().Name, "critical", cancellationToken)
+                .ConfigureAwait(false);
         }
     }
 
