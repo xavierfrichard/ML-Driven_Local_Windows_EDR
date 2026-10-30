@@ -1,6 +1,8 @@
 <Window x:Class="Warden.Ui.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:Warden.Ui"
+        xmlns:viewModels="clr-namespace:Warden.Ui.ViewModels"
         Title="Warden — Zero-Trust Application Control"
         Height="740" Width="1200"
         WindowStartupLocation="CenterScreen">
@@ -32,19 +34,24 @@
 
             <!-- 5. Whitelist (all columns) -->
             <TabItem Header="Whitelist">
-                <DockPanel>
+                <DockPanel DataContext="{Binding}">
                     <ToolBar DockPanel.Dock="Top">
-                        <Button Content="Refresh" Click="RefreshWhitelist_Click" />
+                        <Button Content="Refresh" Command="{Binding RefreshWhitelistCommand}" />
                         <Separator />
-                        <Button Content="Allow file…" Click="AllowFile_Click" Tag="mutation" ToolTip="Pick an executable or DLL: it is allow-listed in WDAC immediately and recorded here as Allow." />
-                        <Button Content="Manual Add…" Click="AddWhitelist_Click" Tag="mutation" />
+                        <Button Content="Allow file…" Command="{Binding AllowFileCommand}" 
+                                ToolTip="Pick an executable or DLL: it is allow-listed in WDAC immediately and recorded here as Allow." />
+                        <Button Content="Manual Add…" Command="{Binding AddWhitelistCommand}" />
                         <Separator />
-                        <Button Content="Set Allow" Click="WhitelistAllow_Click" Tag="mutation" />
-                        <Button Content="Set Block (revoke)" Click="WhitelistBlock_Click" Tag="mutation" ToolTip="Removes the WDAC allow rule for this file and records a Block, so it is blocked again on its next launch." />
+                        <Button Content="Set Allow" Command="{Binding WhitelistAllowCommand}" />
+                        <Button Content="Set Block (revoke)" Command="{Binding WhitelistBlockCommand}" 
+                                ToolTip="Removes the WDAC allow rule for this file and records a Block, so it is blocked again on its next launch." />
                         <TextBlock VerticalAlignment="Center" Margin="8,0,0,0" Foreground="Gray"
                                    Text="One row per SHA-256 — Set Block revokes a previously allowed file." />
                     </ToolBar>
-                    <DataGrid x:Name="WhitelistGrid" AutoGenerateColumns="False">
+                    <DataGrid x:Name="WhitelistGrid" 
+                              ItemsSource="{Binding WhitelistEntries, Mode=OneWay}"
+                              SelectedItem="{Binding SelectedWhitelistEntry, Mode=OneWayToSource}" 
+                              AutoGenerateColumns="False">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="Time" Binding="{Binding Timestamp}" />
                             <DataGridTextColumn Header="Action" Binding="{Binding Action}" />
@@ -65,78 +72,85 @@
 
             <!-- 6. User Log (everything the user allowed at a prompt) -->
             <TabItem Header="User Log">
-                <DockPanel>
+                <DockPanel DataContext="{Binding}">
                     <ToolBar DockPanel.Dock="Top">
-                        <Button Content="Refresh" Click="RefreshUserLog_Click" />
+                        <Button Content="Refresh" Command="{Binding RefreshUserLogCommand}" />
                         <Separator />
-                        <Button Content="Set Allow" Click="UserLogAllow_Click" Tag="mutation" />
-                        <Button Content="Set Block (revoke)" Click="UserLogBlock_Click" Tag="mutation" ToolTip="Removes the WDAC allow rule for this file and records a Block, so it is blocked again on its next launch." />
+                        <Button Content="Set Allow" Command="{Binding UserLogAllowCommand}" />
+                        <Button Content="Set Block (revoke)" Command="{Binding UserLogBlockCommand}" 
+                                ToolTip="Removes the WDAC allow rule for this file and records a Block, so it is blocked again on its next launch." />
                     </ToolBar>
-                    <DataGrid x:Name="UserLogGrid" />
+                    <DataGrid x:Name="UserLogGrid" 
+                              ItemsSource="{Binding UserLogEntries, Mode=OneWay}"
+                              SelectedItem="{Binding SelectedUserLogEntry, Mode=OneWayToSource}" />
                 </DockPanel>
             </TabItem>
 
             <!-- 9. Rules -->
             <TabItem Header="Rules">
-                <DockPanel>
+                <DockPanel DataContext="{Binding}">
                     <ToolBar DockPanel.Dock="Top">
-                        <Button Content="Refresh" Click="RefreshRules_Click" />
+                        <Button Content="Refresh" Command="{Binding RefreshRulesCommand}" />
                         <Separator />
-                        <Button Content="Add…" Click="AddRule_Click" Tag="mutation" />
-                        <Button Content="Delete selected" Click="DeleteRule_Click" Tag="mutation" />
+                        <Button Content="Add…" Command="{Binding AddRuleCommand}" />
+                        <Button Content="Delete selected" Command="{Binding DeleteRuleCommand}" />
                     </ToolBar>
-                    <DataGrid x:Name="RulesGrid" />
+                    <DataGrid x:Name="RulesGrid" 
+                              ItemsSource="{Binding RuleEntries, Mode=OneWay}"
+                              SelectedItem="{Binding SelectedRuleEntry, Mode=OneWayToSource}" />
                 </DockPanel>
             </TabItem>
 
             <!-- 7. Command Lines -->
             <TabItem Header="Command Lines">
-                <DockPanel>
+                <DockPanel DataContext="{Binding}">
                     <ToolBar DockPanel.Dock="Top">
-                        <Button Content="Refresh" Click="RefreshCommandLines_Click" />
+                        <Button Content="Refresh" Command="{Binding RefreshCommandLinesCommand}" />
                     </ToolBar>
-                    <DataGrid x:Name="CommandLinesGrid" />
+                    <DataGrid x:Name="CommandLinesGrid" ItemsSource="{Binding CommandLineEntries, Mode=OneWay}" />
                 </DockPanel>
             </TabItem>
 
             <!-- 8. Quarantine -->
             <TabItem Header="Quarantine">
-                <DockPanel>
+                <DockPanel DataContext="{Binding}">
                     <ToolBar DockPanel.Dock="Top">
-                        <Button Content="Refresh" Click="RefreshQuarantine_Click" />
+                        <Button Content="Refresh" Command="{Binding RefreshQuarantineCommand}" />
                     </ToolBar>
-                    <DataGrid x:Name="QuarantineGrid" />
+                    <DataGrid x:Name="QuarantineGrid" ItemsSource="{Binding QuarantineEntries, Mode=OneWay}" />
                 </DockPanel>
             </TabItem>
 
             <!-- 3. Attack Chains -->
             <TabItem Header="Attack Chains">
-                <DockPanel>
+                <DockPanel DataContext="{Binding}">
                     <ToolBar DockPanel.Dock="Top">
-                        <Button Content="Refresh" Click="RefreshChains_Click" />
+                        <Button Content="Refresh" Command="{Binding RefreshChainsCommand}" />
                     </ToolBar>
-                    <DataGrid x:Name="ChainsGrid" />
+                    <DataGrid x:Name="ChainsGrid" ItemsSource="{Binding AttackChainEntries, Mode=OneWay}" />
                 </DockPanel>
             </TabItem>
 
             <!-- 4. Protected Folders -->
             <TabItem Header="Protected Folders">
-                <DockPanel>
+                <DockPanel DataContext="{Binding}">
                     <ToolBar DockPanel.Dock="Top">
-                        <Button Content="Refresh" Click="RefreshFolders_Click" />
+                        <Button Content="Refresh" Command="{Binding RefreshFoldersCommand}" />
                         <Separator />
-                        <Button Content="Add folder…" Click="AddFolder_Click" Tag="mutation" />
-                        <Button Content="Delete selected" Click="DeleteFolder_Click" Tag="mutation" />
+                        <Button Content="Add folder…" Command="{Binding AddFolderCommand}" />
+                        <Button Content="Delete selected" Command="{Binding DeleteFolderCommand}" />
                     </ToolBar>
-                    <DataGrid x:Name="FoldersGrid" />
+                    <DataGrid x:Name="FoldersGrid" 
+                              ItemsSource="{Binding ProtectedFolders, Mode=OneWay}"
+                              SelectedItem="{Binding SelectedFolderEntry, Mode=OneWayToSource}" />
                 </DockPanel>
             </TabItem>
 
             <!-- 1. Advanced (vulnerable apps / mitigation profiles / firewall) -->
             <TabItem Header="Advanced">
-                <DockPanel>
+                <DockPanel DataContext="{Binding}">
                     <ToolBar DockPanel.Dock="Top">
-                        <Button Content="Refresh" Click="RefreshAdvanced_Click" />
+                        <Button Content="Refresh" Command="{Binding RefreshAdvancedCommand}" />
                         <Separator />
                         <TextBlock VerticalAlignment="Center" Foreground="Gray"
                                    Text="Firewall checkboxes apply real Windows Firewall rules via the service. Mitigation profiles stay installer-driven." />
@@ -152,7 +166,7 @@
                                  edited), which renders an auto-generated DataGridCheckBoxColumn permanently
                                  disabled. A CheckBox in a template column is a live control, not an edit-mode
                                  cell, so it stays clickable and raises Click on the first press. -->
-                            <DataGrid x:Name="VulnAppsGrid" AutoGenerateColumns="False">
+                            <DataGrid x:Name="VulnAppsGrid" ItemsSource="{Binding VulnerableAppRecords, Mode=OneWay}" AutoGenerateColumns="False">
                                 <DataGrid.Columns>
                                     <DataGridTextColumn Header="App" Binding="{Binding AppPath}" Width="320" />
                                     <DataGridTextColumn Header="Publisher" Binding="{Binding Publisher}" Width="160" />
@@ -163,7 +177,7 @@
                                                 <CheckBox Tag="in"
                                                           HorizontalAlignment="Center"
                                                           IsChecked="{Binding FwInBlocked, Mode=OneWay}"
-                                                          Click="FirewallCheck_Click" />
+                                                          Checked="FirewallCheck_Click" Unchecked="FirewallCheck_Click" />
                                             </DataTemplate>
                                         </DataGridTemplateColumn.CellTemplate>
                                     </DataGridTemplateColumn>
@@ -173,7 +187,7 @@
                                                 <CheckBox Tag="out"
                                                           HorizontalAlignment="Center"
                                                           IsChecked="{Binding FwOutBlocked, Mode=OneWay}"
-                                                          Click="FirewallCheck_Click" />
+                                                          Checked="FirewallCheck_Click" Unchecked="FirewallCheck_Click" />
                                             </DataTemplate>
                                         </DataGridTemplateColumn.CellTemplate>
                                     </DataGridTemplateColumn>
@@ -182,10 +196,10 @@
                             </DataGrid>
                         </GroupBox>
                         <GroupBox Grid.Row="1" Header="Mitigation profiles">
-                            <DataGrid x:Name="MitigationGrid" />
+                            <DataGrid x:Name="MitigationGrid" ItemsSource="{Binding MitigationProfiles, Mode=OneWay}" />
                         </GroupBox>
                         <GroupBox Grid.Row="2" Header="Firewall rules">
-                            <DataGrid x:Name="FirewallGrid" />
+                            <DataGrid x:Name="FirewallGrid" ItemsSource="{Binding FirewallRules, Mode=OneWay}" />
                         </GroupBox>
                     </Grid>
                 </DockPanel>
@@ -193,21 +207,21 @@
 
             <!-- 2. Web Apps (always-ON) -->
             <TabItem Header="Web Apps">
-                <DockPanel>
+                <DockPanel DataContext="{Binding}">
                     <ToolBar DockPanel.Dock="Top">
-                        <Button Content="Refresh" Click="RefreshWebApps_Click" />
+                        <Button Content="Refresh" Command="{Binding RefreshWebAppsCommand}" />
                     </ToolBar>
-                    <DataGrid x:Name="WebAppsGrid" />
+                    <DataGrid x:Name="WebAppsGrid" ItemsSource="{Binding WebAppClassifications, Mode=OneWay}" />
                 </DockPanel>
             </TabItem>
 
             <!-- Bonus: Tamper Log (self-protection audit trail) -->
             <TabItem Header="Tamper Log">
-                <DockPanel>
+                <DockPanel DataContext="{Binding}">
                     <ToolBar DockPanel.Dock="Top">
-                        <Button Content="Refresh" Click="RefreshTamper_Click" />
+                        <Button Content="Refresh" Command="{Binding RefreshTamperCommand}" />
                     </ToolBar>
-                    <DataGrid x:Name="TamperGrid" />
+                    <DataGrid x:Name="TamperGrid" ItemsSource="{Binding TamperEvents, Mode=OneWay}" />
                 </DockPanel>
             </TabItem>
 
