@@ -36,14 +36,14 @@
             <TabItem Header="Whitelist">
                 <DockPanel DataContext="{Binding}">
                     <ToolBar DockPanel.Dock="Top">
-                        <Button Content="Refresh" Click="RefreshWhitelist_Click" />
+                        <Button Content="Refresh" Command="{Binding RefreshWhitelistCommand}" />
                         <Separator />
-                        <Button Content="Allow file…" Click="AllowFile_Click" 
+                        <Button Content="Allow file…" Command="{Binding AllowFileCommand}" 
                                 ToolTip="Pick an executable or DLL: it is allow-listed in WDAC immediately and recorded here as Allow." />
-                        <Button Content="Manual Add…" Click="AddWhitelist_Click" />
+                        <Button Content="Manual Add…" Command="{Binding AddWhitelistCommand}" />
                         <Separator />
-                        <Button Content="Set Allow" Click="WhitelistAllow_Click" />
-                        <Button Content="Set Block (revoke)" Click="WhitelistBlock_Click" 
+                        <Button Content="Set Allow" Command="{Binding WhitelistAllowCommand}" />
+                        <Button Content="Set Block (revoke)" Command="{Binding WhitelistBlockCommand}" 
                                 ToolTip="Removes the WDAC allow rule for this file and records a Block, so it is blocked again on its next launch." />
                         <TextBlock VerticalAlignment="Center" Margin="8,0,0,0" Foreground="Gray"
                                    Text="One row per SHA-256 — Set Block revokes a previously allowed file." />
@@ -74,10 +74,10 @@
             <TabItem Header="User Log">
                 <DockPanel DataContext="{Binding}">
                     <ToolBar DockPanel.Dock="Top">
-                        <Button Content="Refresh" Click="RefreshUserLog_Click" />
+                        <Button Content="Refresh" Command="{Binding RefreshUserLogCommand}" />
                         <Separator />
-                        <Button Content="Set Allow" Click="UserLogAllow_Click" />
-                        <Button Content="Set Block (revoke)" Click="UserLogBlock_Click" 
+                        <Button Content="Set Allow" Command="{Binding UserLogAllowCommand}" />
+                        <Button Content="Set Block (revoke)" Command="{Binding UserLogBlockCommand}" 
                                 ToolTip="Removes the WDAC allow rule for this file and records a Block, so it is blocked again on its next launch." />
                     </ToolBar>
                     <DataGrid x:Name="UserLogGrid" 
@@ -90,10 +90,10 @@
             <TabItem Header="Rules">
                 <DockPanel DataContext="{Binding}">
                     <ToolBar DockPanel.Dock="Top">
-                        <Button Content="Refresh" Click="RefreshRules_Click" />
+                        <Button Content="Refresh" Command="{Binding RefreshRulesCommand}" />
                         <Separator />
-                        <Button Content="Add…" Click="AddRule_Click" />
-                        <Button Content="Delete selected" Click="DeleteRule_Click" />
+                        <Button Content="Add…" Command="{Binding AddRuleCommand}" />
+                        <Button Content="Delete selected" Command="{Binding DeleteRuleCommand}" />
                     </ToolBar>
                     <DataGrid x:Name="RulesGrid" 
                               ItemsSource="{Binding RuleEntries, Mode=OneWay}"
@@ -105,7 +105,7 @@
             <TabItem Header="Command Lines">
                 <DockPanel DataContext="{Binding}">
                     <ToolBar DockPanel.Dock="Top">
-                        <Button Content="Refresh" Click="RefreshCommandLines_Click" />
+                        <Button Content="Refresh" Command="{Binding RefreshCommandLinesCommand}" />
                     </ToolBar>
                     <DataGrid x:Name="CommandLinesGrid" ItemsSource="{Binding CommandLineEntries, Mode=OneWay}" />
                 </DockPanel>
@@ -115,7 +115,7 @@
             <TabItem Header="Quarantine">
                 <DockPanel DataContext="{Binding}">
                     <ToolBar DockPanel.Dock="Top">
-                        <Button Content="Refresh" Click="RefreshQuarantine_Click" />
+                        <Button Content="Refresh" Command="{Binding RefreshQuarantineCommand}" />
                     </ToolBar>
                     <DataGrid x:Name="QuarantineGrid" ItemsSource="{Binding QuarantineEntries, Mode=OneWay}" />
                 </DockPanel>
@@ -125,7 +125,7 @@
             <TabItem Header="Attack Chains">
                 <DockPanel DataContext="{Binding}">
                     <ToolBar DockPanel.Dock="Top">
-                        <Button Content="Refresh" Click="RefreshChains_Click" />
+                        <Button Content="Refresh" Command="{Binding RefreshChainsCommand}" />
                     </ToolBar>
                     <DataGrid x:Name="ChainsGrid" ItemsSource="{Binding AttackChainEntries, Mode=OneWay}" />
                 </DockPanel>
@@ -135,10 +135,10 @@
             <TabItem Header="Protected Folders">
                 <DockPanel DataContext="{Binding}">
                     <ToolBar DockPanel.Dock="Top">
-                        <Button Content="Refresh" Click="RefreshFolders_Click" />
+                        <Button Content="Refresh" Command="{Binding RefreshFoldersCommand}" />
                         <Separator />
-                        <Button Content="Add folder…" Click="AddFolder_Click" />
-                        <Button Content="Delete selected" Click="DeleteFolder_Click" />
+                        <Button Content="Add folder…" Command="{Binding AddFolderCommand}" />
+                        <Button Content="Delete selected" Command="{Binding DeleteFolderCommand}" />
                     </ToolBar>
                     <DataGrid x:Name="FoldersGrid" 
                               ItemsSource="{Binding ProtectedFolders, Mode=OneWay}"
@@ -150,7 +150,7 @@
             <TabItem Header="Advanced">
                 <DockPanel DataContext="{Binding}">
                     <ToolBar DockPanel.Dock="Top">
-                        <Button Content="Refresh" Click="RefreshAdvanced_Click" />
+                        <Button Content="Refresh" Command="{Binding RefreshAdvancedCommand}" />
                         <Separator />
                         <TextBlock VerticalAlignment="Center" Foreground="Gray"
                                    Text="Firewall checkboxes apply real Windows Firewall rules via the service. Mitigation profiles stay installer-driven." />
@@ -209,7 +209,7 @@
             <TabItem Header="Web Apps">
                 <DockPanel DataContext="{Binding}">
                     <ToolBar DockPanel.Dock="Top">
-                        <Button Content="Refresh" Click="RefreshWebApps_Click" />
+                        <Button Content="Refresh" Command="{Binding RefreshWebAppsCommand}" />
                     </ToolBar>
                     <DataGrid x:Name="WebAppsGrid" ItemsSource="{Binding WebAppClassifications, Mode=OneWay}" />
                 </DockPanel>
@@ -219,7 +219,7 @@
             <TabItem Header="Tamper Log">
                 <DockPanel DataContext="{Binding}">
                     <ToolBar DockPanel.Dock="Top">
-                        <Button Content="Refresh" Click="RefreshTamper_Click" />
+                        <Button Content="Refresh" Command="{Binding RefreshTamperCommand}" />
                     </ToolBar>
                     <DataGrid x:Name="TamperGrid" ItemsSource="{Binding TamperEvents, Mode=OneWay}" />
                 </DockPanel>

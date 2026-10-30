@@ -2,6 +2,7 @@ using System.IO;
 using System.Security.Cryptography;
 using System.Windows.Input;
 using Warden.Storage;
+using Warden.Ui.Services;
 using Warden.Ui.ViewModels.Validation;
 
 namespace Warden.Ui.ViewModels;
@@ -11,9 +12,11 @@ namespace Warden.Ui.ViewModels;
 /// </summary>
 public sealed class AddWhitelistWindowViewModel : ValidatableViewModelBase
 {
+    private readonly IFileDialogService _fileDialogService;
     private string _path = string.Empty;
     private string _sha256 = string.Empty;
     private PolicyAction _selectedAction = PolicyAction.Allow;
+    private object? _owner;
 
     /// <summary>
     /// Gets or sets the file path.
@@ -59,10 +62,21 @@ public sealed class AddWhitelistWindowViewModel : ValidatableViewModelBase
     /// <summary>
     /// Initializes a new instance of the AddWhitelistWindowViewModel class.
     /// </summary>
-    public AddWhitelistWindowViewModel()
+    /// <param name="fileDialogService">The file dialog service for browsing files.</param>
+    public AddWhitelistWindowViewModel(IFileDialogService? fileDialogService = null)
     {
+        _fileDialogService = fileDialogService ?? new FileDialogService();
         BrowseCommand = new RelayCommand(Browse);
         OkCommand = new RelayCommand(Ok, CanOk);
+    }
+    
+    /// <summary>
+    /// Sets the owner window for dialogs.
+    /// </summary>
+    /// <param name="owner">The owner window.</param>
+    public void SetOwner(object? owner)
+    {
+        _owner = owner;
     }
 
     /// <summary>
@@ -75,8 +89,28 @@ public sealed class AddWhitelistWindowViewModel : ValidatableViewModelBase
     /// </summary>
     private void Browse()
     {
-        // This will be handled by code-behind which has access to the window
-        // The code-behind will update the ViewModel properties after file selection
+        string? file = _fileDialogService.ShowOpenFileDialog(
+            "Choose the file",
+            FileDialogService.ExecutableFilter,
+            _owner);
+        
+        if (file != null)
+        {
+            try
+            {
+                using FileStream fs = File.OpenRead(file);
+                Sha256 = Convert.ToHexString(SHA256.HashData(fs));
+                Path = file;
+            }
+            catch (IOException)
+            {
+                // Error will be shown by caller if needed
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // Error will be shown by caller if needed
+            }
+        }
     }
 
     /// <summary>

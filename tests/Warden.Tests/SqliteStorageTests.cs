@@ -114,6 +114,27 @@ public sealed class SqliteStorageTests : IDisposable
         Assert.Empty(await repo.GetEnabledAsync());
     }
 
+    [Fact]
+    public async Task Rules_can_be_disabled_and_re_enabled()
+    {
+        var repo = new RulesRepository(_db);
+        long id = await repo.AddAsync(new RuleEntry
+        {
+            Kind = RuleKind.Folder,
+            MatchValue = @"C:\Tools\",
+            Action = PolicyAction.Allow,
+            Enabled = true,
+            CreatedTs = DateTimeOffset.UtcNow,
+        });
+
+        await repo.SetEnabledAsync(id, enabled: false);
+        Assert.Empty(await repo.GetEnabledAsync());
+        Assert.False((await repo.GetAllAsync()).Single().Enabled);
+
+        await repo.SetEnabledAsync(id, enabled: true);
+        Assert.Single(await repo.GetEnabledAsync());
+    }
+
     private static WhitelistEntry New(string sha, PolicyAction action) => new()
     {
         Timestamp = DateTimeOffset.UtcNow,

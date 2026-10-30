@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Windows.Input;
 using Warden.Storage;
+using Warden.Ui.Services;
 using Warden.Ui.ViewModels.Validation;
 
 namespace Warden.Ui.ViewModels;
@@ -12,6 +13,7 @@ namespace Warden.Ui.ViewModels;
 /// </summary>
 public sealed class AddRuleWindowViewModel : ValidatableViewModelBase
 {
+    private readonly IFileDialogService _fileDialogService;
     private RuleKind _selectedKind = RuleKind.Hash;
     private PolicyAction _selectedAction = PolicyAction.Allow;
     private string _matchValue = string.Empty;
@@ -21,6 +23,9 @@ public sealed class AddRuleWindowViewModel : ValidatableViewModelBase
     private bool _requireWhitelist;
     private string _note = string.Empty;
     private bool _browseButtonEnabled = true;
+    
+    // Properties for owner window (needed for dialogs)
+    private object? _owner;
 
     /// <summary>
     /// Gets or sets the selected rule kind.
@@ -137,14 +142,25 @@ public sealed class AddRuleWindowViewModel : ValidatableViewModelBase
     /// <summary>
     /// Initializes a new instance of the AddRuleWindowViewModel class.
     /// </summary>
-    public AddRuleWindowViewModel()
+    /// <param name="fileDialogService">The file dialog service for browsing files/folders.</param>
+    public AddRuleWindowViewModel(IFileDialogService? fileDialogService = null)
     {
+        _fileDialogService = fileDialogService ?? new FileDialogService();
         BrowseCommand = new RelayCommand(Browse);
         OkCommand = new RelayCommand(Ok, CanOk);
         
         // Initialize hints for default kind (Hash)
         UpdateHints();
         UpdateBrowseEnabled();
+    }
+    
+    /// <summary>
+    /// Sets the owner window for dialogs.
+    /// </summary>
+    /// <param name="owner">The owner window.</param>
+    public void SetOwner(object? owner)
+    {
+        _owner = owner;
     }
 
     /// <summary>
@@ -187,12 +203,89 @@ public sealed class AddRuleWindowViewModel : ValidatableViewModelBase
     private bool CanOk() => !string.IsNullOrWhiteSpace(MatchValue) && IsValid;
 
     /// <summary>
-    /// Handles the Browse command to select a file or folder.
+    /// Handles the Browse command to select a file or folder based on the selected kind.
     /// </summary>
     private void Browse()
     {
-        // This will be handled by code-behind which has access to the window
-        // The code-behind will update the ViewModel properties after file selection
+        switch (SelectedKind)
+        {
+            case RuleKind.Folder:
+            {
+                string? folder = _fileDialogService.ShowOpenFolderDialog("Choose the folder this rule applies to", _owner);
+                if (folder != null)
+                {
+                    MatchValue = folder;
+                    SourcePath = null;
+                    SourceHint = string.Empty;
+                }
+                break;
+            }
+            case RuleKind.Hash:
+            {
+                string? file = _fileDialogService.ShowOpenFileDialog(
+                    "Choose the file to compute the SHA-256 of",
+                    FileDialogService.ExecutableFilter,
+                    _owner);
+                if (file != null)
+                {
+                    try
+                    {
+                        using FileStream fs = File.OpenRead(file);
+                        MatchValue = Convert.ToHexString(SHA256.HashData(fs));
+                        SourcePath = file;
+                        SourceHint = $"From {file}";
+                    }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                    {
+                        // Error will be shown by caller if needed
+                    }
+                }
+                break;
+            }
+            case RuleKind.Signature:
+            {
+                string? file = _fileDialogService.ShowOpenFileDialog(
+                    "Choose a signed file to read the publisher from",
+                    FileDialogService.ExecutableFilter,
+                    _owner);
+                if (file != null)
+                {
+                    string? publisher = ReadPublisher(file);
+                    if (publisher != null)
+                    {
+                        MatchValue = publisher;
+                        SourcePath = file;
+                        SourceHint = $"From {file}";
+                    }
+                }
+                break;
+            }
+        }
+    }
+    
+    /// <summary>
+    /// Reads the publisher name from a signed file.
+    /// </summary>
+    private static string? ReadPublisher(string file)
+    {
+        try
+        {
+            using var cert = new X509Certificate2(X509Certificate.CreateFromSignedFile(file));
+            string cn = cert.GetNameInfo(X509NameType.SimpleName, forIssuer: false);
+            return string.IsNullOrWhiteSpace(cn) ? cert.Subject : cn;
+        }
+        catch (CryptographicException)
+        {
+            return null;
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return null;
+        }
     }
 
     /// <summary>
@@ -299,24 +392,4 @@ public sealed class AddRuleWindowViewModel : ValidatableViewModelBase
         return Convert.ToHexString(SHA256.HashData(fs));
     }
 
-    /// <summary>
-    /// Reads the publisher name from a signed file.
-    /// </summary>
-    public static string? ReadPublisher(string filePath)
-    {
-        try
-        {
-            using var cert = new X509Certificate2(X509Certificate.CreateFromSignedFile(filePath));
-            string cn = cert.GetNameInfo(X509NameType.SimpleName, forIssuer: false);
-            return string.IsNullOrWhiteSpace(cn) ? cert.Subject : cn;
-        }
-        catch (CryptographicException)
-        {
-            return null;
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            return null;
-        }
-    }
 }

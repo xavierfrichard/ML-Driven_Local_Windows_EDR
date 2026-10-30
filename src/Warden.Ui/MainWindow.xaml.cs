@@ -1,8 +1,8 @@
 using System.Windows;
 using System.Windows.Controls;
-using Microsoft.Win32;
 using Warden.Ipc;
 using Warden.Storage;
+using Warden.Ui.Services;
 using Warden.Ui.ViewModels;
 
 namespace Warden.Ui;
@@ -25,9 +25,16 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
 
-        // Create and set the ViewModel as DataContext
-        _viewModel = new MainWindowViewModel();
+        // Create services
+        var dialogService = new DialogService();
+        var fileDialogService = new FileDialogService();
+
+        // Create and set the ViewModel as DataContext with injected services
+        _viewModel = new MainWindowViewModel(dialogService, fileDialogService);
         DataContext = _viewModel;
+
+        // Set the owner for dialog operations
+        _viewModel.SetOwner(this);
 
         // Set database path text
         DbPathText.Text = @"via WardenAgent (pipe: " + MgmtProtocol.PipeName + ")";
@@ -127,237 +134,6 @@ public partial class MainWindow : Window
         await _viewModel.LoadAdvancedAsync();
     }
 
-    // ---- Dialog-based mutation actions ----
-
-    /// <summary>
-    /// Opens the Add Rule dialog.
-    /// </summary>
-    private async void AddRule_Click(object sender, RoutedEventArgs e)
-    {
-        var dlg = new AddRuleWindow { Owner = this };
-        if (dlg.ShowDialog() == true && dlg.Result is { } rule)
-        {
-            // Envelope: the rule plus the file its hash/publisher came from, so the service can allow-list
-            // that file immediately (see RuleAddPayload).
-            await _viewModel.MutateAndReloadAsync(
-                MgmtOperations.RulesAdd,
-                new { Rule = rule, SourcePath = dlg.SourcePath },
-                "Rule added.",
-                ct => _viewModel.LoadRulesAsync(ct));
-            await _viewModel.LoadWhitelistAsync();
-        }
-    }
-
-    /// <summary>
-    /// Deletes the selected rule.
-    /// </summary>
-    private async void DeleteRule_Click(object sender, RoutedEventArgs e)
-    {
-        if (_viewModel.SelectedRuleEntry is RuleEntry rule)
-        {
-            await _viewModel.MutateAndReloadAsync(
-                MgmtOperations.RulesDelete,
-                new IdPayload(rule.Id),
-                "Rule deleted.",
-                ct => _viewModel.LoadRulesAsync(ct));
-        }
-        else
-        {
-            _viewModel.Status = "Select a rule row to delete.";
-        }
-    }
-
-    /// <summary>
-    /// "Allow file…": pick a blocked executable/DLL and allow it now — the service hash-allow-lists it in
-    /// WDAC immediately and records an Allow row, so no fail-then-relaunch cycle is needed.
-    /// </summary>
-    private async void AllowFile_Click(object sender, RoutedEventArgs e)
-    {
-        var dlg = new OpenFileDialog
-        {
-            Title = "Choose a file to allow",
-            Filter = "Executables and libraries (*.exe;*.dll;*.ocx;*.cpl;*.scr;*.arx;*.dbx)|*.exe;*.dll;*.ocx;*.cpl;*.scr;*.arx;*.dbx|All files (*.*)|*.*",
-            CheckFileExists = true,
-            Multiselect = true,
-        };
-        if (dlg.ShowDialog(this) != true)
-        {
-            return;
-        }
-
-        foreach (string file in dlg.FileNames)
-        {
-            await _viewModel.MutateAndReloadAsync(
-                MgmtOperations.WhitelistAllowFile,
-                new AllowFilePayload(file),
-                $"{System.IO.Path.GetFileName(file)} allowed.",
-                ct => _viewModel.LoadWhitelistAsync(ct));
-        }
-    }
-
-    /// <summary>
-    /// Opens the Add Folder dialog.
-    /// </summary>
-    private async void AddFolder_Click(object sender, RoutedEventArgs e)
-    {
-        var dlg = new OpenFolderDialog { Title = "Choose a folder to protect" };
-        if (dlg.ShowDialog(this) == true)
-        {
-            var folder = new ProtectedFolder
-            {
-                Path = dlg.FolderName,
-                Recursive = true,
-                MonitorMode = "monitor",
-                AddedTs = DateTimeOffset.UtcNow,
-            };
-            await _viewModel.MutateAndReloadAsync(
-                MgmtOperations.FoldersAdd,
-                folder,
-                "Protected folder added.",
-                ct => _viewModel.LoadFoldersAsync(ct));
-        }
-    }
-
-    /// <summary>
-    /// Deletes the selected folder.
-    /// </summary>
-    private async void DeleteFolder_Click(object sender, RoutedEventArgs e)
-    {
-        if (_viewModel.SelectedFolderEntry is ProtectedFolder folder)
-        {
-            await _viewModel.MutateAndReloadAsync(
-                MgmtOperations.FoldersDelete,
-                new IdPayload(folder.Id),
-                "Protected folder removed.",
-                ct => _viewModel.LoadFoldersAsync(ct));
-        }
-        else
-        {
-            _viewModel.Status = "Select a folder row to delete.";
-        }
-    }
-
-    /// <summary>
-    /// Opens the Add Whitelist dialog.
-    /// </summary>
-    private async void AddWhitelist_Click(object sender, RoutedEventArgs e)
-    {
-        var dlg = new AddWhitelistWindow { Owner = this };
-        if (dlg.ShowDialog() == true && dlg.Result is { } entry)
-        {
-            await _viewModel.MutateAndReloadAsync(
-                MgmtOperations.WhitelistAdd,
-                entry,
-                "Whitelist entry saved.",
-                ct => _viewModel.LoadWhitelistAsync(ct));
-        }
-    }
-
-    /// <summary>
-    /// Sets the action for the selected whitelist entry.
-    /// </summary>
-    private async void WhitelistAllow_Click(object sender, RoutedEventArgs e)
-    {
-        if (_viewModel.SelectedWhitelistEntry is WhitelistEntry entry)
-        {
-            await _viewModel.MutateAndReloadAsync(
-                MgmtOperations.WhitelistSetAction,
-                new SetActionPayload(entry.Id, (int)PolicyAction.Allow),
-                $"{entry.ProcessName} set to Allow.",
-                ct => _viewModel.LoadWhitelistAsync(ct));
-        }
-        else
-        {
-            _viewModel.Status = "Select a row first.";
-        }
-    }
-
-    /// <summary>
-    /// Sets the action for the selected whitelist entry to Block.
-    /// </summary>
-    private async void WhitelistBlock_Click(object sender, RoutedEventArgs e)
-    {
-        if (_viewModel.SelectedWhitelistEntry is WhitelistEntry entry)
-        {
-            await _viewModel.MutateAndReloadAsync(
-                MgmtOperations.WhitelistSetAction,
-                new SetActionPayload(entry.Id, (int)PolicyAction.Block),
-                $"{entry.ProcessName} set to Block.",
-                ct => _viewModel.LoadWhitelistAsync(ct));
-        }
-        else
-        {
-            _viewModel.Status = "Select a row first.";
-        }
-    }
-
-    /// <summary>
-    /// Sets the action for the selected user log entry.
-    /// </summary>
-    private async void UserLogAllow_Click(object sender, RoutedEventArgs e)
-    {
-        if (_viewModel.SelectedUserLogEntry is WhitelistEntry entry)
-        {
-            await _viewModel.MutateAndReloadAsync(
-                MgmtOperations.WhitelistSetAction,
-                new SetActionPayload(entry.Id, (int)PolicyAction.Allow),
-                $"{entry.ProcessName} set to Allow.",
-                ct => _viewModel.LoadUserLogAsync(ct));
-        }
-        else
-        {
-            _viewModel.Status = "Select a row first.";
-        }
-    }
-
-    /// <summary>
-    /// Sets the action for the selected user log entry to Block.
-    /// </summary>
-    private async void UserLogBlock_Click(object sender, RoutedEventArgs e)
-    {
-        if (_viewModel.SelectedUserLogEntry is WhitelistEntry entry)
-        {
-            await _viewModel.MutateAndReloadAsync(
-                MgmtOperations.WhitelistSetAction,
-                new SetActionPayload(entry.Id, (int)PolicyAction.Block),
-                $"{entry.ProcessName} set to Block.",
-                ct => _viewModel.LoadUserLogAsync(ct));
-        }
-        else
-        {
-            _viewModel.Status = "Select a row first.";
-        }
-    }
-
-    // ---- Refresh handlers for each tab ----
-
-    private async void RefreshWhitelist_Click(object sender, RoutedEventArgs e) =>
-        await _viewModel.LoadWhitelistAsync();
-
-    private async void RefreshUserLog_Click(object sender, RoutedEventArgs e) =>
-        await _viewModel.LoadUserLogAsync();
-
-    private async void RefreshRules_Click(object sender, RoutedEventArgs e) =>
-        await _viewModel.LoadRulesAsync();
-
-    private async void RefreshCommandLines_Click(object sender, RoutedEventArgs e) =>
-        await _viewModel.LoadCommandLinesAsync();
-
-    private async void RefreshQuarantine_Click(object sender, RoutedEventArgs e) =>
-        await _viewModel.LoadQuarantineAsync();
-
-    private async void RefreshChains_Click(object sender, RoutedEventArgs e) =>
-        await _viewModel.LoadChainsAsync();
-
-    private async void RefreshFolders_Click(object sender, RoutedEventArgs e) =>
-        await _viewModel.LoadFoldersAsync();
-
-    private async void RefreshAdvanced_Click(object sender, RoutedEventArgs e) =>
-        await _viewModel.LoadAdvancedAsync();
-
-    private async void RefreshWebApps_Click(object sender, RoutedEventArgs e) =>
-        await _viewModel.LoadWebAppsAsync();
-
-    private async void RefreshTamper_Click(object sender, RoutedEventArgs e) =>
-        await _viewModel.LoadTamperAsync();
+    // Note: All Click handlers for buttons have been migrated to ViewModel commands.
+    // The FirewallCheck_Click handler is still used in XAML for checkbox events.
 }

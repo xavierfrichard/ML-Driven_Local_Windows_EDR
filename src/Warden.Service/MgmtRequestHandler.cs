@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
@@ -267,7 +268,8 @@ public sealed partial class MgmtRequestHandler : IMgmtHandler
             Directory.CreateDirectory(dir);
             snapshot = Path.Combine(dir, $"mgmt_{Guid.NewGuid():N}_{Path.GetFileName(path)}");
 
-            // FileShare.Read: nobody can modify the file while it is being copied.
+            // Copy and hash in one pass. FileShare.Read on the source: nobody can modify it during the copy.
+            string copiedSha;
             using (var source = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
             {
                 if (source.Length > MaxVerifyBytes)
@@ -275,7 +277,25 @@ public sealed partial class MgmtRequestHandler : IMgmtHandler
                     return (null, "the file is larger than the size cap.");
                 }
                 using var target = new FileStream(snapshot, FileMode.CreateNew, FileAccess.Write, FileShare.None);
-                source.CopyTo(target);
+                using var hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+                byte[] buffer = new byte[81920];
+                int read;
+                while ((read = source.Read(buffer, 0, buffer.Length)) > 0)
+                {
+                    hasher.AppendData(buffer, 0, read);
+                    target.Write(buffer, 0, read);
+                }
+                copiedSha = Convert.ToHexString(hasher.GetHashAndReset());
+            }
+
+            // Hold the copy open read-only, denying writers and deleters, until verification is done, and confirm
+            // it still holds the bytes just copied. So the signature checked and the hash pinned are of the same
+            // bytes, even if something else can reach the snapshot folder.
+            using var locked = new FileStream(snapshot, FileMode.Open, FileAccess.Read, FileShare.Read);
+            string lockedSha = Convert.ToHexString(SHA256.HashData(locked));
+            if (!string.Equals(lockedSha, copiedSha, StringComparison.Ordinal))
+            {
+                return (null, "the copy changed while it was being checked.");
             }
 
             SignerInfo signer = _inspector.ReadSigner(snapshot);
@@ -288,8 +308,7 @@ public sealed partial class MgmtRequestHandler : IMgmtHandler
                 return (null, $"it is signed by '{signer.SubjectCommonName ?? signer.SubjectName}', not exactly '{publisher}'.");
             }
 
-            string? sha = _inspector.ComputeSha256(snapshot);
-            return sha is null ? (null, "it could not be hashed.") : (sha, null);
+            return (lockedSha, null);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
         {

@@ -6,9 +6,7 @@
         Title="Manual Whitelist Entry" Width="560" SizeToContent="Height"
         WindowStartupLocation="CenterOwner" ResizeMode="NoResize" ShowInTaskbar="False">
 
-    <Window.DataContext>
-        <viewModels:AddWhitelistWindowViewModel x:Name="ViewModel" />
-    </Window.DataContext>
+
 
     <StackPanel Margin="16">
         <TextBlock Text="File (Browse… fills the path and computes the SHA-256)" />
@@ -20,7 +18,7 @@
             <TextBox x:Name="PathBox" Grid.Column="0" 
                      Text="{Binding Path, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
             <Button Grid.Column="1" Content="Browse…" Width="84" Margin="8,0,0,0" 
-                    Click="Browse_Click" />
+                    Command="{Binding BrowseCommand}" />
         </Grid>
 
         <TextBlock Text="SHA-256 (uppercase hex)" />
@@ -36,7 +34,7 @@
 
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,8,0,0">
             <Button Content="OK" IsDefault="True" Width="84" Margin="0,0,8,0" 
-                    Click="Ok_Click" 
+                    Command="{Binding OkCommand}" 
                     IsEnabled="{Binding OkCommand.CanExecute}" />
             <Button Content="Cancel" IsCancel="True" Width="84" />
         </StackPanel>

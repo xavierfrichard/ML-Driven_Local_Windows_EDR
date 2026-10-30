@@ -6,9 +6,7 @@
         Title="Add Rule" Width="520" SizeToContent="Height"
         WindowStartupLocation="CenterOwner" ResizeMode="NoResize" ShowInTaskbar="False">
     
-    <Window.DataContext>
-        <viewModels:AddRuleWindowViewModel x:Name="ViewModel" />
-    </Window.DataContext>
+
 
     <StackPanel Margin="16">
         <TextBlock Text="Kind" />
@@ -28,7 +26,7 @@
                      Text="{Binding MatchValue, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
             <Button x:Name="BrowseButton" Grid.Column="1" 
                     Content="Browse…" Width="84" Margin="8,0,0,0" 
-                    Click="Browse_Click" 
+                    Command="{Binding BrowseCommand}" 
                     IsEnabled="{Binding BrowseButtonEnabled, Mode=OneWay}" />
         </Grid>
         <TextBlock x:Name="SourceHint" Text="{Binding SourceHint, Mode=OneWay}" 
@@ -50,7 +48,6 @@
 
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,8,0,0">
             <Button Content="OK" IsDefault="True" Width="84" Margin="0,0,8,0" 
-                    Click="Ok_Click" 
                     Command="{Binding OkCommand}" 
                     IsEnabled="{Binding OkCommand.CanExecute}" />
             <Button Content="Cancel" IsCancel="True" Width="84" />

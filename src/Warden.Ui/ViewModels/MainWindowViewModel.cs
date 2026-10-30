@@ -1,9 +1,11 @@
+using System;
 using System.Collections.ObjectModel;
+using System.IO;
 using System.Windows;
 using System.Windows.Input;
-using Microsoft.Win32;
 using Warden.Ipc;
 using Warden.Storage;
+using Warden.Ui.Services;
 
 namespace Warden.Ui.ViewModels;
 
@@ -13,6 +15,9 @@ namespace Warden.Ui.ViewModels;
 public sealed class MainWindowViewModel : ViewModelBase, IDisposable
 {
     internal readonly MgmtPipeClient _client = new();
+    private readonly IDialogService _dialogService;
+    private readonly IFileDialogService _fileDialogService;
+    private WeakReference<Window>? _owner;
     private string _status = "Ready.";
     private string _dbPathText = string.Empty;
     private bool _isAdministrator;
@@ -225,8 +230,11 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
     /// <summary>
     /// Initializes a new instance of the MainWindowViewModel class.
     /// </summary>
-    public MainWindowViewModel()
+    public MainWindowViewModel(IDialogService dialogService, IFileDialogService fileDialogService)
     {
+        _dialogService = dialogService ?? throw new ArgumentNullException(nameof(dialogService));
+        _fileDialogService = fileDialogService ?? throw new ArgumentNullException(nameof(fileDialogService));
+
         // Initialize commands
         RefreshWhitelistCommand = new AsyncRelayCommand(LoadWhitelistAsync);
         RefreshUserLogCommand = new AsyncRelayCommand(LoadUserLogAsync);
@@ -252,6 +260,23 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
 
         // Set initial database path text
         DbPathText = "via WardenAgent (pipe: " + MgmtProtocol.PipeName + ")";
+    }
+
+    /// <summary>
+    /// Sets the owner window for dialog operations.
+    /// </summary>
+    /// <param name="owner">The owner window.</param>
+    public void SetOwner(Window? owner)
+    {
+        _owner = owner != null ? new WeakReference<Window>(owner) : null;
+    }
+
+    /// <summary>
+    /// Gets the owner window, or null if not set or collected.
+    /// </summary>
+    private Window? GetOwner()
+    {
+        return _owner?.TryGetTarget(out var target) == true ? target : null;
     }
 
     /// <summary>
@@ -473,68 +498,141 @@ public sealed class MainWindowViewModel : ViewModelBase, IDisposable
     // Mutation methods
     private async Task AddRuleAsync(CancellationToken ct = default)
     {
-        // This will be handled by showing AddRuleWindow
-        // The actual addition is done in the dialog's OK handler
-        // For now, we'll keep this as a placeholder
-        Status = "Use the Add button in the Rules tab to add a rule.";
+        var owner = GetOwner();
+        if (owner == null)
+        {
+            Status = "Cannot show dialog: no owner window.";
+            return;
+        }
+
+        var result = _dialogService.ShowAddRuleDialog(owner);
+        if (result == null)
+        {
+            return;
+        }
+
+        var (rule, sourcePath) = result.Value;
+        
+        // Envelope: the rule plus the file its hash/publisher came from, so the service can allow-list
+        // that file immediately (see RuleAddPayload).
+        await MutateAndReloadAsync(
+            MgmtOperations.RulesAdd,
+            new { Rule = rule, SourcePath = sourcePath },
+            "Rule added.",
+            c => LoadRulesAsync(c), ct);
+        await LoadWhitelistAsync(ct);
     }
 
     private async Task DeleteRuleAsync(CancellationToken ct = default)
     {
-        if (SelectedRuleEntry is null)
+        if (SelectedRuleEntry == null)
         {
             Status = "Select a rule row to delete.";
             return;
         }
 
-        try
-        {
-            await _client.InvokeAsync(MgmtOperations.RulesDelete, new IdPayload(SelectedRuleEntry.Id), ct);
-            Status = "Rule deleted.";
-            await LoadRulesAsync(ct);
-        }
-        catch (Exception ex)
-        {
-            Status = ex.Message;
-        }
+        await MutateAndReloadAsync(
+            MgmtOperations.RulesDelete,
+            new IdPayload(SelectedRuleEntry.Id),
+            "Rule deleted.",
+            c => LoadRulesAsync(c), ct);
     }
 
     private async Task AddFolderAsync(CancellationToken ct = default)
     {
-        // This will be handled by showing folder picker dialog
-        Status = "Use the Add folder button in the Protected Folders tab.";
+        var owner = GetOwner();
+        if (owner == null)
+        {
+            Status = "Cannot show dialog: no owner window.";
+            return;
+        }
+
+        var folderPath = _dialogService.ShowOpenFolderDialog(owner, "Choose a folder to protect");
+        if (folderPath == null)
+        {
+            return;
+        }
+
+        var folder = new ProtectedFolder
+        {
+            Path = folderPath,
+            Recursive = true,
+            MonitorMode = "monitor",
+            AddedTs = DateTimeOffset.UtcNow,
+        };
+        
+        await MutateAndReloadAsync(
+            MgmtOperations.FoldersAdd,
+            folder,
+            "Protected folder added.",
+            c => LoadFoldersAsync(c), ct);
     }
 
     private async Task DeleteFolderAsync(CancellationToken ct = default)
     {
-        if (SelectedFolderEntry is null)
+        if (SelectedFolderEntry == null)
         {
             Status = "Select a folder row to delete.";
             return;
         }
 
-        try
-        {
-            await _client.InvokeAsync(MgmtOperations.FoldersDelete, new IdPayload(SelectedFolderEntry.Id), ct);
-            Status = "Protected folder removed.";
-            await LoadFoldersAsync(ct);
-        }
-        catch (Exception ex)
-        {
-            Status = ex.Message;
-        }
+        await MutateAndReloadAsync(
+            MgmtOperations.FoldersDelete,
+            new IdPayload(SelectedFolderEntry.Id),
+            "Protected folder removed.",
+            c => LoadFoldersAsync(c), ct);
     }
 
     private async Task AllowFileAsync(CancellationToken ct = default)
     {
-        // This will be handled by showing file picker dialog
-        Status = "Use the Allow file button in the Whitelist tab.";
+        var owner = GetOwner();
+        if (owner == null)
+        {
+            Status = "Cannot show dialog: no owner window.";
+            return;
+        }
+
+        var files = _dialogService.ShowOpenFileDialog(
+            owner,
+            "Choose a file to allow",
+            "Executables and libraries (*.exe;*.dll;*.ocx;*.cpl;*.scr;*.arx;*.dbx)|*.exe;*.dll;*.ocx;*.cpl;*.scr;*.arx;*.dbx|All files (*.*)|*.*",
+            multiselect: true);
+        
+        if (files == null || files.Length == 0)
+        {
+            return;
+        }
+
+        foreach (string file in files)
+        {
+            await MutateAndReloadAsync(
+                MgmtOperations.WhitelistAllowFile,
+                new AllowFilePayload(file),
+                $"{Path.GetFileName(file)} allowed.",
+                c => LoadWhitelistAsync(c), ct);
+        }
     }
 
     private async Task AddWhitelistAsync(CancellationToken ct = default)
     {
-        // This will be handled by showing AddWhitelistWindow
-        Status = "Use the Manual Add button in the Whitelist tab.";
+        var owner = GetOwner();
+        if (owner == null)
+        {
+            Status = "Cannot show dialog: no owner window.";
+            return;
+        }
+
+        var entry = _dialogService.ShowAddWhitelistDialog(owner);
+        if (entry == null)
+        {
+            return;
+        }
+
+        await MutateAndReloadAsync(
+            MgmtOperations.WhitelistAdd,
+            entry,
+            "Whitelist entry saved.",
+            c => LoadWhitelistAsync(c), ct);
     }
 
     /// <summary>
