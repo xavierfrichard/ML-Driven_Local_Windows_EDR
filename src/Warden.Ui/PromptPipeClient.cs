@@ -17,7 +17,8 @@ namespace Warden.Ui;
 /// <remarks>
 /// Connects at <see cref="TokenImpersonationLevel.Identification"/> (the service only needs to <i>identify</i>
 /// the caller for its Administrators check; a rogue server must never be able to impersonate the elevated
-/// UI) and refuses a pipe whose owner is not SYSTEM/Administrators/the current user.
+/// UI) and refuses a pipe that is not owned by SYSTEM and hosted by the WardenAgent service process
+/// (<see cref="PipeGuard.ServerLooksLegitimate(PipeStream)"/>; a current-user owner only in dev mode).
 /// </remarks>
 public sealed class PromptPipeClient : IAsyncDisposable
 {

@@ -14,6 +14,9 @@ namespace Warden.Tests.Windows;
 /// </summary>
 public sealed class PipeSecurityTests
 {
+    /// <summary>The servers here run in the test process as this user, so clients use the dev-run trust.</summary>
+    private static readonly PipeServerTrust DevTrust = new() { AllowCurrentUserOwner = true };
+
     private static bool ThisProcessIsElevated()
     {
         using var id = WindowsIdentity.GetCurrent();
@@ -29,7 +32,8 @@ public sealed class PipeSecurityTests
             RetryBackoff = TimeSpan.FromMilliseconds(50),
             IdleTimeout = TimeSpan.FromSeconds(30),
         };
-        o.AllowedClientImageNames.Clear(); // the test host is not Warden.Ui.exe
+        o.AllowedClientImagePaths.Clear(); // the test host is not the installed Warden.Ui.exe
+        o.DevUiImageName = null;
         return o;
     }
 
@@ -105,7 +109,7 @@ public sealed class PipeSecurityTests
         using var server = new MgmtPipeServer(handler, errors.Add, options);
         server.Start();
 
-        using var client = new MgmtPipeClient(options.MgmtPipeName);
+        using var client = new MgmtPipeClient(options.MgmtPipeName, DevTrust);
         bool isAdmin = await client.IsAdministratorAsync();
 
         // The server impersonates the client AFTER reading the first frame; that is what makes this
@@ -128,7 +132,7 @@ public sealed class PipeSecurityTests
         using var server = new MgmtPipeServer(handler, null, options);
         server.Start();
 
-        using var client = new MgmtPipeClient(options.MgmtPipeName);
+        using var client = new MgmtPipeClient(options.MgmtPipeName, DevTrust);
         var ex = await Assert.ThrowsAsync<MgmtException>(() => client.InvokeAsync(MgmtOperations.WhitelistAdd, new { Sha256 = "AA" }));
         Assert.Equal(MgmtProtocol.ElevationRequired, ex.Message);
         Assert.DoesNotContain(handler.Calls, c => c.Op == MgmtOperations.WhitelistAdd);
@@ -152,7 +156,7 @@ public sealed class PipeSecurityTests
         using var server = new MgmtPipeServer(handler, null, options);
         server.Start();
 
-        using var client = new MgmtPipeClient(options.MgmtPipeName);
+        using var client = new MgmtPipeClient(options.MgmtPipeName, DevTrust);
         await client.InvokeAsync(MgmtOperations.RulesDelete, new IdPayload(1));
         Assert.Contains(handler.Calls, c => c.Op == MgmtOperations.RulesDelete && c.Admin);
     }
@@ -166,7 +170,7 @@ public sealed class PipeSecurityTests
         using var server = new MgmtPipeServer(handler, errors.Add, options);
         server.Start();
 
-        using var client = new MgmtPipeClient(options.MgmtPipeName);
+        using var client = new MgmtPipeClient(options.MgmtPipeName, DevTrust);
         // "boom" is not a read → needs admin; if we're not elevated we get ElevationRequired (fine).
         // If we are elevated the handler throws and the client must see a generic message only.
         MgmtException ex = await Assert.ThrowsAsync<MgmtException>(() => client.InvokeAsync("boom", null));
@@ -206,7 +210,7 @@ public sealed class PipeSecurityTests
         }
 
         // The server is still alive for a well-behaved client.
-        using var client = new MgmtPipeClient(options.MgmtPipeName);
+        using var client = new MgmtPipeClient(options.MgmtPipeName, DevTrust);
         Assert.Empty(await client.ListAsync<object>(MgmtOperations.RulesList));
         Assert.Contains(security, s => s.Contains("oversized", StringComparison.OrdinalIgnoreCase));
     }
@@ -215,13 +219,13 @@ public sealed class PipeSecurityTests
     public async Task Peer_image_allow_list_rejects_this_test_host_when_configured()
     {
         PipeServerOptions options = TestOptions();
-        options.AllowedClientImageNames.Add("Warden.Ui.exe"); // we are testhost.exe / dotnet.exe
+        options.AllowedClientImagePaths.Add(@"C:\Program Files\Warden\ui\Warden.Ui.exe"); // we are testhost.exe / dotnet.exe
         var handler = new RecordingHandler();
         var security = new List<string>();
         using var server = new MgmtPipeServer(handler, null, options, security.Add);
         server.Start();
 
-        using var client = new MgmtPipeClient(options.MgmtPipeName);
+        using var client = new MgmtPipeClient(options.MgmtPipeName, DevTrust);
         await Assert.ThrowsAsync<MgmtException>(() => client.ListAsync<object>(MgmtOperations.RulesList));
         Assert.Contains(security, s => s.Contains("Rejected management-pipe client", StringComparison.Ordinal));
         Assert.Empty(handler.Calls);
@@ -322,7 +326,7 @@ public sealed class PipeSecurityTests
     }
 
     [Fact]
-    public async Task Server_pipe_owner_passes_the_client_side_legitimacy_check()
+    public async Task Server_pipe_owned_by_this_user_passes_the_client_side_check_only_with_the_dev_switch()
     {
         PipeServerOptions options = TestOptions();
         using var server = new PromptPipeServer(null, options);
@@ -330,7 +334,8 @@ public sealed class PipeSecurityTests
 
         using var pipe = new NamedPipeClientStream(".", options.PromptPipeName, PipeDirection.InOut, PipeOptions.Asynchronous, TokenImpersonationLevel.Identification);
         await pipe.ConnectAsync(5000);
-        Assert.True(PipeGuard.ServerLooksLegitimate(pipe));
+        Assert.True(PipeGuard.ServerLooksLegitimate(pipe, new PipeServerTrust { AllowCurrentUserOwner = true }));
+        Assert.False(PipeGuard.ServerLooksLegitimate(pipe, PipeServerTrust.Production));
     }
 
     private static async Task WaitUntil(Func<bool> condition, CancellationToken ct)
