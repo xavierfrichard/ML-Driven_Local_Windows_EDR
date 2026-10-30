@@ -54,7 +54,7 @@ internal sealed class Dossier
 
     /// <summary>
     /// Projects the dossier onto the Warden.Core <see cref="VerdictContext"/> the decision pipeline
-    /// consumes â€” validating that the spike's fields line up with the shipped contract.
+    /// consumes — validating that the spike's fields line up with the shipped contract.
     /// </summary>
     public VerdictContext ToVerdictContext() => new(
         Sha256: Sha256FlatHex ?? string.Empty,
@@ -91,50 +91,50 @@ internal sealed class Dossier
         };
 
         var sb = new StringBuilder();
-        sb.AppendLine("â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€");
-        sb.AppendLine($"â”‚ WARDEN DOSSIER  â€”  {modeTag}");
-        sb.AppendLine($"â”‚ observed : {Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz}");
-        sb.AppendLine($"â”‚ source   : {sourceTag}");
-        sb.AppendLine($"â”‚ corr-id  : 0x{CorrelationId:X16}");
-        sb.AppendLine("â”œâ”€ FILE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€");
-        sb.AppendLine($"â”‚ name     : {FileName}");
-        sb.AppendLine($"â”‚ path     : {ImagePath}");
-        sb.AppendLine($"â”‚ size     : {(FileSize >= 0 ? FileSize.ToString("N0") + " bytes" : "(unavailable)")}");
-        sb.AppendLine($"â”‚ SHA-256  : {Sha256FlatHex ?? "(unavailable)"}  [flat file hash]");
+        sb.AppendLine("┌────────────────────────────────────────────────────────────────────────────");
+        sb.AppendLine($"│ WARDEN DOSSIER  —  {modeTag}");
+        sb.AppendLine($"│ observed : {Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz}");
+        sb.AppendLine($"│ source   : {sourceTag}");
+        sb.AppendLine($"│ corr-id  : 0x{CorrelationId:X16}");
+        sb.AppendLine("├─ FILE ─────────────────────────────────────────────────────────────────────");
+        sb.AppendLine($"│ name     : {FileName}");
+        sb.AppendLine($"│ path     : {ImagePath}");
+        sb.AppendLine($"│ size     : {(FileSize >= 0 ? FileSize.ToString("N0") + " bytes" : "(unavailable)")}");
+        sb.AppendLine($"│ SHA-256  : {Sha256FlatHex ?? "(unavailable)"}  [flat file hash]");
         if (!string.IsNullOrEmpty(Sha256Authenticode))
         {
-            sb.AppendLine($"â”‚ SHA-256  : {Sha256Authenticode}  [Authenticode, from CI event]");
+            sb.AppendLine($"│ SHA-256  : {Sha256Authenticode}  [Authenticode, from CI event]");
         }
-        sb.AppendLine($"â”‚ MOTW     : {DescribeMotw(MotwZone)}");
-        sb.AppendLine("â”œâ”€ SIGNER â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€");
+        sb.AppendLine($"│ MOTW     : {DescribeMotw(MotwZone)}");
+        sb.AppendLine("├─ SIGNER ───────────────────────────────────────────────────────────────────");
         if (!Signer.IsSigned)
         {
-            sb.AppendLine("â”‚ signed   : NO (unsigned, or catalog-signed â€” not visible to embedded-sig read)");
+            sb.AppendLine("│ signed   : NO (unsigned, or catalog-signed — not visible to embedded-sig read)");
         }
         else
         {
-            sb.AppendLine($"â”‚ signed   : YES  valid={Signer.IsValid}  microsoft={Signer.IsMicrosoft}");
-            sb.AppendLine($"â”‚ subject  : {Signer.SubjectName}");
-            sb.AppendLine($"â”‚ issuer   : {Signer.IssuerName}");
-            sb.AppendLine($"â”‚ thumb    : {Signer.Thumbprint}");
+            sb.AppendLine($"│ signed   : YES  valid={Signer.IsValid}  microsoft={Signer.IsMicrosoft}");
+            sb.AppendLine($"│ subject  : {Signer.SubjectName}");
+            sb.AppendLine($"│ issuer   : {Signer.IssuerName}");
+            sb.AppendLine($"│ thumb    : {Signer.Thumbprint}");
         }
-        sb.AppendLine("â”œâ”€ PROCESS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€");
+        sb.AppendLine("├─ PROCESS ──────────────────────────────────────────────────────────────────");
         if (ProcessContextUnavailable)
         {
-            sb.AppendLine("â”‚ cmdline  : (unavailable â€” enforce block: process never ran)");
-            sb.AppendLine($"â”‚ requestor: {(string.IsNullOrEmpty(ParentPath) ? "(unknown)" : ParentPath)}  [loader per CI event]");
-            sb.AppendLine("â”‚ pid/ppid : (unavailable)");
+            sb.AppendLine("│ cmdline  : (unavailable — enforce block: process never ran)");
+            sb.AppendLine($"│ requestor: {(string.IsNullOrEmpty(ParentPath) ? "(unknown)" : ParentPath)}  [loader per CI event]");
+            sb.AppendLine("│ pid/ppid : (unavailable)");
         }
         else
         {
-            sb.AppendLine($"â”‚ cmdline  : {CommandLine}");
-            sb.AppendLine($"â”‚ pid      : {Pid}");
-            sb.AppendLine($"â”‚ parent   : {(string.IsNullOrEmpty(ParentPath) ? "(unknown)" : ParentPath)}  (ppid {ParentPid})");
+            sb.AppendLine($"│ cmdline  : {CommandLine}");
+            sb.AppendLine($"│ pid      : {Pid}");
+            sb.AppendLine($"│ parent   : {(string.IsNullOrEmpty(ParentPath) ? "(unknown)" : ParentPath)}  (ppid {ParentPid})");
         }
-        sb.AppendLine("â”œâ”€ POLICY â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€");
-        sb.AppendLine($"â”‚ name     : {(string.IsNullOrEmpty(PolicyName) ? "(n/a)" : PolicyName)}");
-        sb.AppendLine($"â”‚ guid     : {(string.IsNullOrEmpty(PolicyGuid) ? "(n/a)" : PolicyGuid)}");
-        sb.AppendLine("â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€");
+        sb.AppendLine("├─ POLICY ───────────────────────────────────────────────────────────────────");
+        sb.AppendLine($"│ name     : {(string.IsNullOrEmpty(PolicyName) ? "(n/a)" : PolicyName)}");
+        sb.AppendLine($"│ guid     : {(string.IsNullOrEmpty(PolicyGuid) ? "(n/a)" : PolicyGuid)}");
+        sb.AppendLine("└────────────────────────────────────────────────────────────────────────────");
 
         w.Write(sb.ToString());
         w.Flush();
@@ -143,13 +143,13 @@ internal sealed class Dossier
     private static string DescribeMotw(int zone) => zone switch
     {
         VerdictContext.NoMotw => "none (no Mark-of-the-Web stream)",
-        >= 4 => $"Restricted (ZoneId={zone}) â€” untrusted origin",
-        3 => "Internet (ZoneId=3) â€” downloaded, untrusted",
+        >= 4 => $"Restricted (ZoneId={zone}) — untrusted origin",
+        3 => "Internet (ZoneId=3) — downloaded, untrusted",
         _ => $"Local/Trusted (ZoneId={zone})",
     };
 
     /// <summary>
-    /// Builds a fully-populated sample dossier for <c>--selftest</c> â€” no file, event-log, or ETW
+    /// Builds a fully-populated sample dossier for <c>--selftest</c> — no file, event-log, or ETW
     /// access, so it runs fine as a non-admin smoke test on the host.
     /// </summary>
     public static Dossier CreateSample() => new()
@@ -168,7 +168,7 @@ internal sealed class Dossier
         ParentPath = @"C:\Windows\explorer.exe",
         PolicyName = "Warden Phase 0 Audit Base",
         PolicyGuid = "{A7F1C0DE-0000-4000-8000-DEADBEEF0000}",
-        Sha256Authenticode = "(unsigned file â€” flat hash used by CI event)",
+        Sha256Authenticode = "(unsigned file — flat hash used by CI event)",
         CorrelationId = 0xC0FFEE0000BADF00,
         Timestamp = DateTimeOffset.Now,
     };
