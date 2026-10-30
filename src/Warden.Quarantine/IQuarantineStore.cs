@@ -12,9 +12,13 @@ public sealed record QuarantineResult(bool Success, long RecordId, string? Quara
 /// </summary>
 public interface IQuarantineStore
 {
-    /// <summary>Moves <paramref name="filePath"/> into quarantine and records it.</summary>
+    /// <summary>
+    /// Moves <paramref name="filePath"/> into quarantine and records it, but only if the file really at that
+    /// path (no junction, symlink or hard link in the way) still hashes to <paramref name="expectedSha256"/>,
+    /// the flat SHA-256 the decision was made on. Any mismatch fails and leaves the file in place.
+    /// </summary>
     Task<QuarantineResult> QuarantineAsync(
-        string filePath, string reason, string verdictSource, CancellationToken cancellationToken = default);
+        string filePath, string expectedSha256, string reason, string verdictSource, CancellationToken cancellationToken = default);
 
     /// <summary>Restores a previously quarantined file to its original path.</summary>
     Task<bool> RestoreAsync(long recordId, CancellationToken cancellationToken = default);
