@@ -12,6 +12,7 @@ using Warden.Monitoring;
 using Warden.Quarantine;
 using Warden.Reputation;
 using Warden.Rules;
+using Warden.Secrets;
 using Warden.Service;
 using Warden.AntiExploit;
 using Warden.Firewall;
@@ -22,6 +23,30 @@ using Warden.Wdac;
 using Warden.WebApps;
 
 var builder = Host.CreateApplicationBuilder(args);
+
+// M4: API keys and the ML model pin come from the protected secret store (DPAPI blobs under
+// <data dir>\secrets, SYSTEM + Administrators only, written by installer\Set-WardenSecret.ps1). The old machine
+// environment variables are world-readable and are honoured only as a deprecated fallback with a warning.
+// Lookups run while services are registered, before logging exists, so their messages are logged after Build.
+var secretStore = new WardenSecretStore(WardenPaths.DataDirectory);
+var secretLookups = new List<(string Name, SecretLookup Lookup)>();
+string? ReadSecret(string name, string? legacyVariable)
+{
+    SecretLookup lookup = legacyVariable is null
+        ? secretStore.Get(name)
+        : secretStore.GetWithLegacyFallback(name, legacyVariable, Environment.GetEnvironmentVariable);
+    secretLookups.Add((name, lookup));
+    return lookup.Value;
+}
+
+// H5/M5: before the SYSTEM service runs or trusts a file outside its install folder (the claude CLI, the ML
+// model), the file and every folder above it must be owned by SYSTEM/Administrators/TrustedInstaller, with no
+// one else able to write to the file or its folder or to move a parent folder aside. Same policy as Folder
+// allow rules (Warden.Hardening.FolderWriteAccess).
+static string? DescribeTrustedChainEntry(string path, string? sddl, ChainRole role) =>
+    FolderWriteAccess.Describe(path, sddl,
+        role == ChainRole.Ancestor ? FolderWriteAccess.Scope.Ancestor : FolderWriteAccess.Scope.Content);
+static string? PrivilegedFileProblem(string path) => TrustedFileChain.FindProblem(path, DescribeTrustedChainEntry);
 
 // Run as a Windows Service in production; also runs as a console app for dev.
 builder.Services.AddWindowsService(options => options.ServiceName = "WardenAgent");
@@ -65,27 +90,36 @@ builder.Services.AddWardenMgmtServer();
 // Phase 2 telemetry + reputation. The VirusTotal tier stays silent until a key is configured.
 builder.Services.AddWardenReputation(options =>
 {
-    options.ApiKey = Environment.GetEnvironmentVariable("WARDEN_VT_API_KEY");
+    options.ApiKey = ReadSecret(WardenSecretStore.VirusTotalApiKey, "WARDEN_VT_API_KEY");
 });   // adds the VirusTotal IVerdictSource (pipeline tier 3)
 builder.Services.AddWardenAttackChain();
 builder.Services.AddWardenQuarantine();
 builder.Services.AddWardenAmsi();
 builder.Services.AddWardenMonitoring();
-builder.Services.AddWardenMl();          // adds the ONNX ML IVerdictSource (pipeline tier 5; disabled until a model exists)
+// Adds the ONNX ML IVerdictSource (pipeline tier 5; disabled until a model exists). A present model loads only
+// with a SHA-256 pin from the protected store and a privileged owner (M5); no environment fallback for the pin.
+builder.Services.AddWardenMl(options =>
+{
+    options.ModelSha256 = ReadSecret(WardenSecretStore.MlModelSha256, legacyVariable: null);
+    options.ModelFileTrustCheck = PrivilegedFileProblem;
+});
 
 // Phase 4: LLM analyst tier (pipeline tier 6, the last before the user prompt). Disabled until a
 // provider is configured. The Claude Code OAuth provider stays off unless explicitly enabled (personal
-// machines only — see src/Warden.Llm/README.md). Configure the Anthropic API key from the environment.
+// machines only — see src/Warden.Llm/README.md). The Anthropic API key comes from the protected store.
 builder.Services.AddWardenLlm(options =>
 {
-    options.AnthropicApiKey = Environment.GetEnvironmentVariable("WARDEN_ANTHROPIC_API_KEY");
+    options.AnthropicApiKey = ReadSecret(WardenSecretStore.AnthropicApiKey, "WARDEN_ANTHROPIC_API_KEY");
 
     // Subscription-backed analyst via the installed `claude` CLI (personal machine). Preferred when no
     // API key is set. NOTE: the CLI reads its login from the invoking user's profile — under the
-    // LocalSystem service it fails auth and stays silent (fail-safe). To use it under the service, run
-    // `claude setup-token` and expose the token to the service account; otherwise it is live when the
-    // agent runs in the user session. Opt in explicitly with WARDEN_ENABLE_CLAUDE_CLI=1 and point
-    // WARDEN_CLAUDE_CLI_PATH at the executable (an absolute path — a SYSTEM service never resolves through PATH).
+    // LocalSystem service it fails auth and stays silent (fail-safe); the child's allow-listed environment
+    // does not pass CLAUDE_CODE_* tokens through. It is live when the agent runs in the user session.
+    // Opt in explicitly with WARDEN_ENABLE_CLAUDE_CLI=1 and point
+    // WARDEN_CLAUDE_CLI_PATH at the executable: a fully-qualified local .exe (never .cmd/.bat/.ps1) in a folder
+    // only SYSTEM/Administrators can change — e.g. under %ProgramFiles%, NOT the per-user install under
+    // %USERPROFILE% or %APPDATA%\npm. The file and its folders are re-checked before every launch (H5).
+    options.ClaudeCliTrustCheck = PrivilegedFileProblem;
     options.EnableClaudeCli =
         string.Equals(Environment.GetEnvironmentVariable("WARDEN_ENABLE_CLAUDE_CLI"), "1", StringComparison.Ordinal);
     if (Environment.GetEnvironmentVariable("WARDEN_CLAUDE_CLI_PATH") is { Length: > 0 } cliPath)
@@ -119,4 +153,22 @@ builder.Services.AddSingleton<EnforcementController>();
 builder.Services.AddHostedService<WardenWorker>();
 
 var host = builder.Build();
+
+ILogger secretsLog = host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Warden.Secrets");
+foreach ((string name, SecretLookup lookup) in secretLookups)
+{
+    switch (lookup.Origin)
+    {
+        case SecretOrigin.Refused:
+            secretsLog.LogCritical("Secret {Name}: {Message}", name, lookup.Message);
+            break;
+        case SecretOrigin.LegacyEnvironment:
+            secretsLog.LogWarning("Secret {Name}: {Message}", name, lookup.Message);
+            break;
+        case SecretOrigin.Store:
+            secretsLog.LogInformation("Secret {Name} loaded from the protected store.", name);
+            break;
+    }
+}
+
 host.Run();

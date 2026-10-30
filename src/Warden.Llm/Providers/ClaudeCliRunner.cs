@@ -34,17 +34,54 @@ public interface IClaudeCliRunner
 /// <remarks>
 /// <para><b>Absolute path only.</b> The executable is never resolved through PATH (a LocalSystem service with
 /// a user-writable PATH entry would be SYSTEM code execution).</para>
-/// <para><b>Contained child.</b> The service's own secrets (<c>WARDEN_*</c>, <c>ANTHROPIC_*</c>,
-/// <c>CLAUDE_CODE_*</c>) are removed from the child environment, the working directory is a fixed
-/// SYSTEM-owned location (Claude Code treats the CWD as its project root — it must never be an
-/// attacker-influenced folder), and captured output is capped.</para>
+/// <para><b>Contained child.</b> The child gets an <b>allow-listed</b> environment (<see cref="BuildEnvironment"/>):
+/// only the handful of Windows variables a process needs, with <c>PATH</c> reset to the system folders. Every
+/// other variable, including the service's own secrets and anything a future installer adds, stays out. The
+/// working directory is a fixed SYSTEM-owned location (Claude Code treats the CWD as its project root — it must
+/// never be an attacker-influenced folder), and captured output is capped.</para>
 /// </remarks>
 public sealed class ClaudeCliRunner : IClaudeCliRunner
 {
     /// <summary>Per-stream capture cap.</summary>
     public const int MaxCapturedChars = 1024 * 1024;
 
-    private static readonly string[] ScrubbedEnvironmentPrefixes = { "WARDEN_", "ANTHROPIC_", "CLAUDE_CODE_" };
+    /// <summary>
+    /// The only variables copied from the service's environment into the child. Everything else is dropped:
+    /// an allow-list cannot leak a secret that someone adds later under a new name.
+    /// </summary>
+    public static readonly IReadOnlySet<string> AllowedEnvironmentVariables = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        "SystemRoot", "windir", "SystemDrive", "ComSpec", "PATHEXT",
+        "TEMP", "TMP",
+        "USERPROFILE", "USERNAME", "USERDOMAIN", "HOMEDRIVE", "HOMEPATH",
+        "APPDATA", "LOCALAPPDATA", "ProgramData", "ALLUSERSPROFILE", "PUBLIC",
+        "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432",
+        "CommonProgramFiles", "CommonProgramFiles(x86)", "CommonProgramW6432",
+        "COMPUTERNAME", "OS", "NUMBER_OF_PROCESSORS",
+        "PROCESSOR_ARCHITECTURE", "PROCESSOR_IDENTIFIER", "PROCESSOR_LEVEL", "PROCESSOR_REVISION",
+    };
+
+    /// <summary>
+    /// Builds the child environment from <paramref name="current"/>: keeps only <see cref="AllowedEnvironmentVariables"/>
+    /// and sets <c>PATH</c> to the Windows system folders under <paramref name="systemRoot"/> (the machine PATH can
+    /// hold folders a user can write to).
+    /// </summary>
+    public static Dictionary<string, string> BuildEnvironment(IEnumerable<KeyValuePair<string, string?>> current, string systemRoot)
+    {
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (KeyValuePair<string, string?> kv in current)
+        {
+            if (kv.Value is not null && AllowedEnvironmentVariables.Contains(kv.Key))
+            {
+                result[kv.Key] = kv.Value;
+            }
+        }
+        result["PATH"] = string.Join(';',
+            Path.Combine(systemRoot, "System32"),
+            systemRoot,
+            Path.Combine(systemRoot, "System32", "Wbem"));
+        return result;
+    }
 
     public async Task<ClaudeCliResult> RunAsync(
         string executablePath,
@@ -53,9 +90,11 @@ public sealed class ClaudeCliRunner : IClaudeCliRunner
         TimeSpan timeout,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(executablePath) || !Path.IsPathRooted(executablePath))
+        // Defense in depth: the provider already refused these, but the runner never launches a path that is
+        // not a canonical, fully-qualified local .exe.
+        if (ClaudeCliProvider.DescribePathProblem(executablePath) is { } pathProblem)
         {
-            return new ClaudeCliResult(false, -1, string.Empty, "The claude CLI must be configured with an absolute path.");
+            return new ClaudeCliResult(false, -1, string.Empty, pathProblem);
         }
 
         var psi = new ProcessStartInfo
@@ -74,12 +113,11 @@ public sealed class ClaudeCliRunner : IClaudeCliRunner
         {
             psi.ArgumentList.Add(arg);
         }
-        foreach (string key in psi.Environment.Keys.ToList())
+        Dictionary<string, string> environment = BuildEnvironment(psi.Environment, Path.GetDirectoryName(Environment.SystemDirectory)!);
+        psi.Environment.Clear();
+        foreach (KeyValuePair<string, string> kv in environment)
         {
-            if (ScrubbedEnvironmentPrefixes.Any(p => key.StartsWith(p, StringComparison.OrdinalIgnoreCase)))
-            {
-                psi.Environment.Remove(key);
-            }
+            psi.Environment[kv.Key] = kv.Value;
         }
 
         using var process = new Process { StartInfo = psi };

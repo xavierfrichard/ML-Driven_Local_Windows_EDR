@@ -59,7 +59,7 @@ public sealed class LlmVerdictSourceTests
     public async Task Benign_allows_when_configured_and_confident()
     {
         var options = new LlmOptions { AllowOnBenign = true, BenignConfidenceThreshold = 0.85 };
-        var source = Source(options, new FakeLlmProvider { Result = FakeLlmProvider.Verdict(LlmDisposition.Benign, 0.9) });
+        var source = Source(options, new FakeLlmProvider { MayAutoAllow = true, Result = FakeLlmProvider.Verdict(LlmDisposition.Benign, 0.9) });
 
         VerdictResult result = await source.EvaluateAsync(LlmTest.Context(), default);
 
@@ -85,7 +85,7 @@ public sealed class LlmVerdictSourceTests
         // A confident "benign" that did NOT come through the forced tool call (e.g. the local content
         // fallback, which an injected local model could steer) must never clear the block.
         LlmVerdict fromProse = FakeLlmProvider.Verdict(LlmDisposition.Benign, 0.99) with { FromToolCall = false };
-        var source = Source(options, new FakeLlmProvider { Result = fromProse });
+        var source = Source(options, new FakeLlmProvider { MayAutoAllow = true, Result = fromProse });
 
         VerdictResult result = await source.EvaluateAsync(LlmTest.Context(), default);
 

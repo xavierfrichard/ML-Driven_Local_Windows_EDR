@@ -83,7 +83,7 @@ public sealed class VirusTotalClient : IVerdictSource
         if (record.VtTotal > 0 && record.VtPositives >= _options.BlockThreshold)
         {
             return new VerdictResult(Verdict.Block, Kind, Confidence(record),
-                $"VirusTotal: {record.VtPositives}/{record.VtTotal} engines flagged this file.");
+                $"VirusTotal: {record.VtPositives}/{record.VtTotal} engines flagged this file (malicious or suspicious).");
         }
 
         bool freshEnoughToAllow = now - record.CachedTs <= _options.MaxAllowStaleness;
@@ -124,11 +124,12 @@ public sealed class VirusTotalClient : IVerdictSource
 
             if (response.StatusCode == HttpStatusCode.NotFound)
             {
-                // Not in VirusTotal — cache as "unknown" (total 0) so we do not re-query constantly.
+                // Not in VirusTotal — cache as "unknown" (total 0) briefly, so we do not re-query on every
+                // launch but still pick up the scan results once the sample is uploaded.
                 return new ReputationRecord
                 {
                     Sha256 = sha256, VtPositives = 0, VtTotal = 0,
-                    CachedTs = DateTimeOffset.UtcNow, TtlSecs = ttl,
+                    CachedTs = DateTimeOffset.UtcNow, TtlSecs = (long)_options.NotFoundCacheTtl.TotalSeconds,
                 };
             }
 
@@ -160,7 +161,7 @@ public sealed class VirusTotalClient : IVerdictSource
 
     private static ReputationRecord ParseRecord(string sha256, JsonElement root, long ttl)
     {
-        int malicious = 0, total = 0;
+        long flagged = 0, total = 0; // long: hostile counts cannot overflow into a negative
         DateTimeOffset? firstSeen = null;
 
         if (root.TryGetProperty("data", out JsonElement data) &&
@@ -174,16 +175,21 @@ public sealed class VirusTotalClient : IVerdictSource
                     {
                         continue;
                     }
-                    int value = p.Value.GetInt32();
+                    if (!p.Value.TryGetInt32(out int value) || value < 0)
+                    {
+                        continue; // a negative or out-of-range count must not cancel out another engine's vote
+                    }
                     // Count only real engine verdicts toward the total; timeout / confirmed-timeout /
                     // failure / type-unsupported are not scans and must not inflate the "clean" denominator.
+                    // "suspicious" counts as flagged, like "malicious": a file any engine finds suspicious is
+                    // not clean. (The cache has one positives column, so both share it.)
                     switch (p.Name)
                     {
                         case "malicious":
-                            malicious = value;
+                        case "suspicious":
+                            flagged += value;
                             total += value;
                             break;
-                        case "suspicious":
                         case "harmless":
                         case "undetected":
                             total += value;
@@ -200,7 +206,8 @@ public sealed class VirusTotalClient : IVerdictSource
 
         return new ReputationRecord
         {
-            Sha256 = sha256, VtPositives = malicious, VtTotal = total, VtFirstSeen = firstSeen,
+            Sha256 = sha256, VtPositives = (int)Math.Min(flagged, int.MaxValue), VtTotal = (int)Math.Min(total, int.MaxValue),
+            VtFirstSeen = firstSeen,
             CachedTs = DateTimeOffset.UtcNow, TtlSecs = ttl,
         };
     }

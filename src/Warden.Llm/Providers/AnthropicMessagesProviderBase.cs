@@ -34,6 +34,9 @@ public abstract class AnthropicMessagesProviderBase : IVerdictLlmProvider
     /// <inheritdoc/>
     public abstract bool IsEnabled { get; }
 
+    /// <inheritdoc />
+    public virtual bool MayAutoAllow => false;
+
     /// <summary>Named <see cref="HttpClient"/> to use.</summary>
     protected abstract string HttpClientName { get; }
 

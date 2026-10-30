@@ -31,20 +31,33 @@ public sealed class LlmOptions
     public bool EnableLocal { get; set; }
 
     /// <summary>
-    /// Base address of the local OpenAI-compatible server (Ollama's default shown). A plain-<c>http</c>
-    /// address is honoured only for loopback; a remote <c>http://</c> endpoint would send the dossier and
-    /// <see cref="LocalApiKey"/> in clear text and is refused by the provider.
+    /// Base address of the local OpenAI-compatible server (Ollama's default shown). <c>https</c> is accepted.
+    /// Plain <c>http</c> is accepted only for loopback, and only with <see cref="LocalAllowLoopbackHttp"/> and a
+    /// <see cref="LocalApiKey"/>; a remote <c>http://</c> endpoint is always refused.
     /// </summary>
     public Uri LocalBaseAddress { get; set; } = new("http://localhost:11434/");
+
+    /// <summary>
+    /// Explicit opt-in for a plain-<c>http</c> loopback endpoint. Off by default: any local user can bind a
+    /// free loopback port (for example 11434 while Ollama is stopped) and answer the analyst's requests.
+    /// Even when on, the local provider can never auto-allow (see <see cref="AllowOnBenign"/>).
+    /// </summary>
+    public bool LocalAllowLoopbackHttp { get; set; }
 
     /// <summary>Hard cap on any provider's HTTP response body.</summary>
     public const long MaxResponseBytes = 4L * 1024 * 1024;
 
-    /// <summary>True when <see cref="LocalBaseAddress"/> is https, or http to a loopback host.</summary>
+    /// <summary>
+    /// True when <see cref="LocalBaseAddress"/> is https, or http to a loopback host with both
+    /// <see cref="LocalAllowLoopbackHttp"/> and a <see cref="LocalApiKey"/> set.
+    /// </summary>
     public bool LocalBaseAddressIsAcceptable =>
         LocalBaseAddress is not null
         && (string.Equals(LocalBaseAddress.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
-            || (string.Equals(LocalBaseAddress.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) && LocalBaseAddress.IsLoopback));
+            || (string.Equals(LocalBaseAddress.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
+                && LocalBaseAddress.IsLoopback
+                && LocalAllowLoopbackHttp
+                && !string.IsNullOrWhiteSpace(LocalApiKey)));
 
     /// <summary>Model name/tag on the local server (e.g. a security-tuned Llama-3.1-8B). User-set.</summary>
     public string LocalModel { get; set; } = "foundation-sec-8b";
@@ -71,11 +84,20 @@ public sealed class LlmOptions
     public bool EnableClaudeCli { get; set; }
 
     /// <summary>
-    /// <b>Absolute</b> path to the <c>claude</c> executable (e.g. <c>C:\Program Files\Claude\claude.exe</c>).
-    /// The provider stays disabled for a relative/bare value: a LocalSystem service must never resolve an
-    /// executable through the PATH search order (a user-writable PATH entry would be SYSTEM code execution).
+    /// Fully-qualified local path to the <c>claude</c> <b>.exe</b> (e.g. <c>C:\Program Files\Claude\claude.exe</c>).
+    /// The provider stays disabled for a bare, relative, drive-relative, UNC or device path, and for scripts
+    /// (<c>.cmd</c>/<c>.bat</c>/<c>.ps1</c>): a LocalSystem service must never resolve an executable through PATH
+    /// or run one that a user can change. See <see cref="Providers.ClaudeCliProvider.DescribePathProblem"/>.
     /// </summary>
     public string ClaudeCliPath { get; set; } = string.Empty;
+
+    /// <summary>
+    /// File-system trust check run before <b>every</b> CLI launch. Given <see cref="ClaudeCliPath"/>, it returns
+    /// null when the file and every parent folder are owned by SYSTEM, Administrators or TrustedInstaller and
+    /// nobody else can write to them (or replace them); otherwise a reason. The service injects one built on
+    /// <c>Warden.Hardening.FolderWriteAccess</c>. When this is null the CLI is never launched (fail closed).
+    /// </summary>
+    public Func<string, string?>? ClaudeCliTrustCheck { get; set; }
 
     /// <summary>
     /// Per-invocation timeout for the CLI. Generous by default: a cold CLI start plus model latency runs
@@ -119,7 +141,9 @@ public sealed class LlmOptions
     /// <summary>
     /// Allow decisively on a confident "benign" verdict. Off by default — like the other tiers, the
     /// analyst only ever blocks and lets unknowns fall through to the user, so a model error or an
-    /// injection can never auto-allow. Enable to let the analyst clear confident-benign unknowns.
+    /// injection can never auto-allow. Even when on, only a provider whose
+    /// <see cref="IVerdictLlmProvider.MayAutoAllow"/> is true (the Anthropic API provider) can produce an
+    /// Allow; the local, CLI and OAuth providers can only block or defer.
     /// </summary>
     public bool AllowOnBenign { get; set; }
 

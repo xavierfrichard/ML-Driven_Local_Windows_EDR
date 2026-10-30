@@ -16,6 +16,7 @@ public sealed class OnnxScorer : IVerdictSource, IDisposable
     private readonly MlOptions _options;
     private readonly ILogger<OnnxScorer> _logger;
     private readonly Lazy<InferenceSession?> _session;
+    private string _notLoadedReason = "ML model not loaded.";
 
     public OnnxScorer(IPeFeatureExtractor extractor, MlOptions options, ILogger<OnnxScorer> logger)
     {
@@ -32,21 +33,20 @@ public sealed class OnnxScorer : IVerdictSource, IDisposable
         InferenceSession? session = _session.Value;
         if (session is null)
         {
-            return new ValueTask<VerdictResult>(VerdictResult.Undecided(Kind, "ML model not loaded."));
+            return new ValueTask<VerdictResult>(VerdictResult.Undecided(Kind, _notLoadedReason));
         }
 
         double score;
         try
         {
-            string path = context.BytesPath;
-            long length = new FileInfo(path).Length;
-            if (length > _options.MaxImageBytes)
+            // One handle for the size check and the read: the file cannot be swapped or grown in between.
+            byte[]? bytes = BoundedFile.ReadAll(context.BytesPath, _options.MaxImageBytes, out long length);
+            if (bytes is null)
             {
                 // Refuse to load an attacker-sized file into memory (the extractor copies it again).
                 return new ValueTask<VerdictResult>(VerdictResult.Undecided(Kind, $"Image is {length} bytes; above the ML size cap."));
             }
 
-            byte[] bytes = File.ReadAllBytes(path);
             if (!PeNet.PeFile.IsPeFile(bytes))
             {
                 return new ValueTask<VerdictResult>(VerdictResult.Undecided(Kind, "Not a PE image."));
@@ -124,37 +124,86 @@ public sealed class OnnxScorer : IVerdictSource, IDisposable
 
     private InferenceSession? LoadModel()
     {
+        string path = _options.ModelPath;
         try
         {
-            if (!File.Exists(_options.ModelPath))
+            if (!File.Exists(path))
             {
-                _logger.LogInformation("ML model not found at {Path}; ML tier disabled.", _options.ModelPath);
-                return null;
+                _logger.LogInformation("ML model not found at {Path}; ML tier disabled.", path);
+                return Refuse("ML model not present.");
             }
 
-            if (!string.IsNullOrWhiteSpace(_options.ModelSha256))
+            // A model file exists. From here on every failure is critical: someone deployed (or planted) a
+            // model, and the tier refuses to run it rather than run one it cannot vouch for.
+            string? pin = NormalizePin(_options.ModelSha256);
+            if (pin is null)
             {
-                string actual;
-                using (FileStream fs = File.OpenRead(_options.ModelPath))
-                {
-                    actual = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(fs));
-                }
-                if (!string.Equals(actual, _options.ModelSha256.Trim(), StringComparison.OrdinalIgnoreCase))
-                {
-                    _logger.LogError("ML model {Path} does not match the pinned SHA-256; ML tier disabled.", _options.ModelPath);
-                    return null;
-                }
+                _logger.LogCritical(
+                    "ML model {Path} exists but no valid SHA-256 pin is configured; refusing to load it. "
+                    + "Store the model's hash with installer\\Set-WardenSecret.ps1 -Name MlModelSha256.", path);
+                return Refuse("ML model refused: no SHA-256 pin is configured.");
             }
 
-            var session = new InferenceSession(_options.ModelPath);
-            _logger.LogInformation("Loaded ML model {Path} (version {Version}).", _options.ModelPath, _options.ModelVersion);
+            Func<string, string?>? trustCheck = _options.ModelFileTrustCheck;
+            if (trustCheck is null)
+            {
+                _logger.LogCritical("ML model {Path} not loaded: no file-ownership check is configured.", path);
+                return Refuse("ML model refused: its ownership cannot be verified.");
+            }
+            if (trustCheck(path) is { } untrusted)
+            {
+                _logger.LogCritical("ML model {Path} not loaded: {Problem}", path, untrusted);
+                return Refuse("ML model refused: its file or folder is not owned and controlled by SYSTEM/Administrators.");
+            }
+
+            // Read once, hash those bytes, and load those same bytes: no second open that could see other content.
+            byte[]? model = BoundedFile.ReadAll(path, _options.MaxModelBytes, out long length);
+            if (model is null)
+            {
+                _logger.LogCritical("ML model {Path} is {Size} bytes, above the {Cap}-byte cap; not loaded.", path, length, _options.MaxModelBytes);
+                return Refuse("ML model refused: file too large.");
+            }
+
+            string actual = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(model));
+            if (!string.Equals(actual, pin, StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogCritical("ML model {Path} does not match the pinned SHA-256 (found {Actual}); ML tier disabled.", path, actual);
+                return Refuse("ML model refused: it does not match the pinned SHA-256.");
+            }
+
+            var session = new InferenceSession(model);
+            _logger.LogInformation("Loaded ML model {Path} (version {Version}, SHA-256 {Sha}).", path, _options.ModelVersion, actual);
             return session;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to load ML model {Path}.", _options.ModelPath);
+            _logger.LogError(ex, "Failed to load ML model {Path}.", path);
+            return Refuse("ML model failed to load.");
+        }
+    }
+
+    private InferenceSession? Refuse(string reason)
+    {
+        _notLoadedReason = reason;
+        return null;
+    }
+
+    /// <summary>A pin is exactly 64 hex characters (optionally with surrounding whitespace); anything else is no pin.</summary>
+    internal static string? NormalizePin(string? pin)
+    {
+        string? trimmed = pin?.Trim();
+        if (trimmed is null || trimmed.Length != 64)
+        {
             return null;
         }
+        foreach (char c in trimmed)
+        {
+            if (!char.IsAsciiHexDigit(c))
+            {
+                return null;
+            }
+        }
+        return trimmed.ToUpperInvariant();
     }
 
     public void Dispose()

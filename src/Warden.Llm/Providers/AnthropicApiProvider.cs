@@ -22,6 +22,9 @@ public sealed class AnthropicApiProvider : AnthropicMessagesProviderBase
 
     public override bool IsEnabled => !string.IsNullOrWhiteSpace(Options.AnthropicApiKey);
 
+    // The one provider whose forced tool-call verdict may clear a block (only with AllowOnBenign on).
+    public override bool MayAutoAllow => true;
+
     protected override string HttpClientName => HttpClient;
 
     protected override void Authenticate(HttpRequestMessage request) =>

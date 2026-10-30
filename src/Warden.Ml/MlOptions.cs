@@ -7,11 +7,23 @@ public sealed class MlOptions
     public string ModelPath { get; set; } = Warden.Core.WardenPaths.Under("ml", "model.onnx");
 
     /// <summary>
-    /// Optional SHA-256 (hex) the model file must match to be loaded. Whoever can write <c>model.onnx</c>
-    /// owns the ML verdict, so pin it wherever the data directory is not already ACL-locked to
-    /// SYSTEM/Administrators. When null the file is loaded as-is.
+    /// SHA-256 (hex) the model file must match to be loaded. <b>Required</b> whenever a model file exists:
+    /// whoever can write <c>model.onnx</c> owns the ML verdict, so a model with no pin (or a malformed one) is
+    /// refused and the tier stays undecided. The service reads it from the protected secret store
+    /// (<c>installer\Set-WardenSecret.ps1 -Name MlModelSha256</c>).
     /// </summary>
     public string? ModelSha256 { get; set; }
+
+    /// <summary>
+    /// File-system trust check for <see cref="ModelPath"/>: null when the file and its folders are owned by
+    /// SYSTEM, Administrators or TrustedInstaller and nobody else can change them; otherwise a reason. The
+    /// service injects one built on <c>Warden.Hardening.FolderWriteAccess</c>. When null, no model is loaded
+    /// (fail closed).
+    /// </summary>
+    public Func<string, string?>? ModelFileTrustCheck { get; set; }
+
+    /// <summary>Largest model file loaded (read once into memory, hashed, then handed to ONNX Runtime).</summary>
+    public long MaxModelBytes { get; set; } = 512L * 1024 * 1024;
 
     /// <summary>Model score at/above which the file is decisively blocked (tuned ~1% FPR).</summary>
     public double HighThreshold { get; set; } = 0.90;
