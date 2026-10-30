@@ -39,11 +39,17 @@ internal static class FileInspector
     }
 
     /// <summary>
-    /// Reads the embedded Authenticode leaf certificate and builds a chain to decide validity and
-    /// whether it chains to Microsoft. Returns <see cref="SignerInfo.Unsigned"/> for unsigned files
-    /// and — a known spike limitation — for catalog-signed files (most in-box Windows binaries), which
-    /// <see cref="X509Certificate.CreateFromSignedFile"/> cannot see. Phase 1 should use WinVerifyTrust.
+    /// Reads the embedded Authenticode leaf certificate and builds a chain to decide validity.
+    /// Returns <see cref="SignerInfo.Unsigned"/> for unsigned files and — a known spike limitation —
+    /// for catalog-signed files (most in-box Windows binaries), which
+    /// <see cref="X509Certificate.CreateFromSignedFile"/> cannot see.
     /// </summary>
+    /// <remarks>
+    /// <see cref="SignerInfo.IsMicrosoft"/> is always <c>false</c> here. The spike has no pinned
+    /// Microsoft roots, and any name-based guess ("Microsoft" in a subject) can be forged by anyone who
+    /// mints a certificate. The real check is <c>Warden.Trust.FileInspector</c>, which pins root
+    /// thumbprints. For the console display only, see <see cref="NameMentionsMicrosoftDisplayOnly"/>.
+    /// </remarks>
     public static SignerInfo ReadSigner(string path)
     {
         try
@@ -51,22 +57,10 @@ internal static class FileInspector
             using var leaf = new X509Certificate2(X509Certificate.CreateFromSignedFile(path));
 
             bool valid;
-            bool chainsToMicrosoft;
             using (var chain = new X509Chain())
             {
                 chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck; // offline VM friendly
                 valid = chain.Build(leaf);
-                chainsToMicrosoft = chain.ChainElements
-                    .Cast<X509ChainElement>()
-                    .Any(el => el.Certificate.Subject.Contains("Microsoft", StringComparison.OrdinalIgnoreCase));
-            }
-
-            // Fall back to a subject-string heuristic if the chain could not be built offline.
-            if (!chainsToMicrosoft)
-            {
-                chainsToMicrosoft =
-                    leaf.Subject.Contains("Microsoft", StringComparison.OrdinalIgnoreCase) ||
-                    leaf.Issuer.Contains("Microsoft", StringComparison.OrdinalIgnoreCase);
             }
 
             return new SignerInfo(
@@ -75,11 +69,21 @@ internal static class FileInspector
                 SubjectName: leaf.Subject,
                 IssuerName: leaf.Issuer,
                 Thumbprint: leaf.Thumbprint, // uppercase hex per X509Certificate2
-                IsMicrosoft: chainsToMicrosoft);
+                IsMicrosoft: false);         // never inferred from names; see remarks
         }
         catch (CryptographicException) { return SignerInfo.Unsigned; }  // unsigned or catalog-only
         catch (IOException) { return SignerInfo.Unsigned; }
     }
+
+    /// <summary>
+    /// DISPLAY ONLY. True when the signer's subject or issuer text contains "Microsoft". This is a
+    /// substring match on attacker-chosen certificate text: it proves nothing and must never feed a
+    /// trust or allow decision. The dossier prints it as a labelled hint for the human reading it.
+    /// </summary>
+    public static bool NameMentionsMicrosoftDisplayOnly(SignerInfo signer) =>
+        signer.IsSigned &&
+        ((signer.SubjectName?.Contains("Microsoft", StringComparison.OrdinalIgnoreCase) ?? false) ||
+         (signer.IssuerName?.Contains("Microsoft", StringComparison.OrdinalIgnoreCase) ?? false));
 
     /// <summary>
     /// Reads the Mark-of-the-Web zone from the NTFS <c>Zone.Identifier</c> alternate data stream.

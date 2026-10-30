@@ -92,18 +92,18 @@ internal sealed class Dossier
 
         var sb = new StringBuilder();
         sb.AppendLine("┌────────────────────────────────────────────────────────────────────────────");
-        sb.AppendLine($"│ WARDEN DOSSIER  —  {modeTag}");
+        sb.AppendLine($"│ WARDEN DOSSIER  —  {ConsoleText.Sanitize(modeTag)}");
         sb.AppendLine($"│ observed : {Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz}");
         sb.AppendLine($"│ source   : {sourceTag}");
         sb.AppendLine($"│ corr-id  : 0x{CorrelationId:X16}");
         sb.AppendLine("├─ FILE ─────────────────────────────────────────────────────────────────────");
-        sb.AppendLine($"│ name     : {FileName}");
-        sb.AppendLine($"│ path     : {ImagePath}");
+        sb.AppendLine($"│ name     : {ConsoleText.Sanitize(FileName)}");
+        sb.AppendLine($"│ path     : {ConsoleText.Sanitize(ImagePath)}");
         sb.AppendLine($"│ size     : {(FileSize >= 0 ? FileSize.ToString("N0") + " bytes" : "(unavailable)")}");
         sb.AppendLine($"│ SHA-256  : {Sha256FlatHex ?? "(unavailable)"}  [flat file hash]");
         if (!string.IsNullOrEmpty(Sha256Authenticode))
         {
-            sb.AppendLine($"│ SHA-256  : {Sha256Authenticode}  [Authenticode, from CI event]");
+            sb.AppendLine($"│ SHA-256  : {ConsoleText.Sanitize(Sha256Authenticode)}  [Authenticode, from CI event]");
         }
         sb.AppendLine($"│ MOTW     : {DescribeMotw(MotwZone)}");
         sb.AppendLine("├─ SIGNER ───────────────────────────────────────────────────────────────────");
@@ -113,27 +113,31 @@ internal sealed class Dossier
         }
         else
         {
-            sb.AppendLine($"│ signed   : YES  valid={Signer.IsValid}  microsoft={Signer.IsMicrosoft}");
-            sb.AppendLine($"│ subject  : {Signer.SubjectName}");
-            sb.AppendLine($"│ issuer   : {Signer.IssuerName}");
-            sb.AppendLine($"│ thumb    : {Signer.Thumbprint}");
+            sb.AppendLine($"│ signed   : YES  chain-valid={Signer.IsValid}  (leaf chain only; file bytes not verified)");
+            if (FileInspector.NameMentionsMicrosoftDisplayOnly(Signer))
+            {
+                sb.AppendLine("│ note     : subject/issuer text mentions \"Microsoft\" (display only, anyone can put this in a certificate; NOT a trust signal)");
+            }
+            sb.AppendLine($"│ subject  : {ConsoleText.Sanitize(Signer.SubjectName)}");
+            sb.AppendLine($"│ issuer   : {ConsoleText.Sanitize(Signer.IssuerName)}");
+            sb.AppendLine($"│ thumb    : {ConsoleText.Sanitize(Signer.Thumbprint)}");
         }
         sb.AppendLine("├─ PROCESS ──────────────────────────────────────────────────────────────────");
         if (ProcessContextUnavailable)
         {
             sb.AppendLine("│ cmdline  : (unavailable — enforce block: process never ran)");
-            sb.AppendLine($"│ requestor: {(string.IsNullOrEmpty(ParentPath) ? "(unknown)" : ParentPath)}  [loader per CI event]");
+            sb.AppendLine($"│ requestor: {(string.IsNullOrEmpty(ParentPath) ? "(unknown)" : ConsoleText.Sanitize(ParentPath))}  [loader per CI event]");
             sb.AppendLine("│ pid/ppid : (unavailable)");
         }
         else
         {
-            sb.AppendLine($"│ cmdline  : {CommandLine}");
+            sb.AppendLine($"│ cmdline  : {ConsoleText.Sanitize(CommandLine)}");
             sb.AppendLine($"│ pid      : {Pid}");
-            sb.AppendLine($"│ parent   : {(string.IsNullOrEmpty(ParentPath) ? "(unknown)" : ParentPath)}  (ppid {ParentPid})");
+            sb.AppendLine($"│ parent   : {(string.IsNullOrEmpty(ParentPath) ? "(unknown)" : ConsoleText.Sanitize(ParentPath))}  (ppid {ParentPid})");
         }
         sb.AppendLine("├─ POLICY ───────────────────────────────────────────────────────────────────");
-        sb.AppendLine($"│ name     : {(string.IsNullOrEmpty(PolicyName) ? "(n/a)" : PolicyName)}");
-        sb.AppendLine($"│ guid     : {(string.IsNullOrEmpty(PolicyGuid) ? "(n/a)" : PolicyGuid)}");
+        sb.AppendLine($"│ name     : {(string.IsNullOrEmpty(PolicyName) ? "(n/a)" : ConsoleText.Sanitize(PolicyName))}");
+        sb.AppendLine($"│ guid     : {(string.IsNullOrEmpty(PolicyGuid) ? "(n/a)" : ConsoleText.Sanitize(PolicyGuid))}");
         sb.AppendLine("└────────────────────────────────────────────────────────────────────────────");
 
         w.Write(sb.ToString());

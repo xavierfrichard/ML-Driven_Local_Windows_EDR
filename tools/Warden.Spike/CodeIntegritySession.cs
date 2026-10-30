@@ -85,7 +85,7 @@ internal sealed class CodeIntegritySession : IDisposable
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[CI] could not verify/enable channel '{Channel}': {ex.Message}");
+            Console.Error.WriteLine($"[CI] could not verify/enable channel '{Channel}': {ConsoleText.Sanitize(ex.Message)}");
         }
     }
 
@@ -93,7 +93,7 @@ internal sealed class CodeIntegritySession : IDisposable
     {
         if (e.EventException is not null)
         {
-            Console.Error.WriteLine($"[CI] watcher error: {e.EventException.Message}");
+            Console.Error.WriteLine($"[CI] watcher error: {ConsoleText.Sanitize(e.EventException.Message)}");
             return;
         }
 
@@ -111,7 +111,7 @@ internal sealed class CodeIntegritySession : IDisposable
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine($"[CI] parse error: {ex.Message}");
+                Console.Error.WriteLine($"[CI] parse error: {ConsoleText.Sanitize(ex.Message)}");
             }
         }
     }
