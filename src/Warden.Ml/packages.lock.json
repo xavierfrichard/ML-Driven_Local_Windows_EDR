@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "dependencies": {
+    "net8.0": {
+      "Microsoft.Extensions.DependencyInjection.Abstractions": {
+        "type": "Direct",
+        "requested": "[8.0.2, )",
+        "resolved": "8.0.2",
+        "contentHash": "3iE7UF7MQkCv1cxzCahz+Y/guQbTqieyxyaWKhrRO91itI9cOKO76OHeQDahqG4MmW5umr3CcCvGmK92lWNlbg=="
+      },
+      "Microsoft.Extensions.Logging.Abstractions": {
+        "type": "Direct",
+        "requested": "[8.0.2, )",
+        "resolved": "8.0.2",
+        "contentHash": "nroMDjS7hNBPtkZqVBbSiQaQjWRDxITI8Y7XnDs97rqG3EbzVTNLZQf7bIeUJcaHOV8bca47s1Uxq94+2oGdxA==",
+        "dependencies": {
+          "Microsoft.Extensions.DependencyInjection.Abstractions": "8.0.2"
+        }
+      },
+      "Microsoft.ML.OnnxRuntime": {
+        "type": "Direct",
+        "requested": "[1.20.1, )",
+        "resolved": "1.20.1",
+        "contentHash": "NzUD79BC6R7TKROLyB3XCzXTpbNZ1YfOdVbult7hoFvd/xyRecOMiRO5HTzkPXvaFlcvZ91+WNCiroAPzUE7Dw==",
+        "dependencies": {
+          "Microsoft.ML.OnnxRuntime.Managed": "1.20.1"
+        }
+      },
+      "PeNet": {
+        "type": "Direct",
+        "requested": "[4.1.3, )",
+        "resolved": "4.1.3",
+        "contentHash": "VARW3umA11Uon4MEXzbNI5pGn1UIYO1gRMV41hZRUzOQoa8obWop2BDMrZLXxrC8DuiunqB0ecL5fH7eaU8A6w==",
+        "dependencies": {
+          "PeNet.Asn1": "2.0.1",
+          "System.Security.Cryptography.Pkcs": "8.0.1"
+        }
+      },
+      "System.Security.Cryptography.Pkcs": {
+        "type": "Direct",
+        "requested": "[8.0.2, )",
+        "resolved": "8.0.2",
+        "contentHash": "VWACYq0JGxi9sw3TonSSV4B2MfhYk5nhgOtp9wbrt5NFOtUetFqHkMZylcCwPX+117cBJH5EnIzIy6X4OKn/kA=="
+      },
+      "Microsoft.ML.OnnxRuntime.Managed": {
+        "type": "Transitive",
+        "resolved": "1.20.1",
+        "contentHash": "+EVcEcKdq3gkw6iu8TYl2coJxfPnMi1YQc6eZ80BGNlw6mbBCxNGe6h4udDCwENYWsXFvYjoBc6412t40tl4ew==",
+        "dependencies": {
+          "System.Memory": "4.5.5"
+        }
+      },
+      "PeNet.Asn1": {
+        "type": "Transitive",
+        "resolved": "2.0.1",
+        "contentHash": "YR2O2YokSAYB+7CXkCDN3bd6/p0K3/AicCPkOJHKUz500v1D/hulCuVlggguqNc3M0LgSfOZKGvVYg2ud1GA9A=="
+      },
+      "System.Memory": {
+        "type": "Transitive",
+        "resolved": "4.5.5",
+        "contentHash": "XIWiDvKPXaTveaB7HVganDlOCRoj03l+jrwNvcge/t8vhGYKvqV+dMv6G4SAX2NoNmN0wZfVPTAlFwZcZvVOUw=="
+      },
+      "warden.core": {
+        "type": "Project"
+      }
+    }
+  }
+}

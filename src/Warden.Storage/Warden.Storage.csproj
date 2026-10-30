@@ -7,6 +7,10 @@
   <ItemGroup>
     <PackageReference Include="Dapper" Version="2.1.35" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.10" />
+    <!-- Microsoft.Data.Sqlite 8.0.10 brings SQLitePCLRaw.bundle_e_sqlite3 2.1.6, whose native SQLite is
+         affected by CVE-2025-6965 (GHSA-2m69-gcr7-jv3q). This newer bundle ships SQLite >= 3.50.2;
+         SqliteStorageTests checks the runtime sqlite_version(). -->
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.14" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="8.0.2" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.2" />
   </ItemGroup>
