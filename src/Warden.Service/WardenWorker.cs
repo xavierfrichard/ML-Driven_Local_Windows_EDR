@@ -23,6 +23,7 @@ public sealed class WardenWorker : BackgroundService
     private readonly ICommandLineRecorder _commandLines;
     private readonly IProtectedFolderMonitor _folders;
     private readonly IVulnerableAppRepository _vulnerableApps;
+    private readonly IRulesRepository _rules;
     private readonly HardeningOptions _hardening;
     private readonly DataDirectoryHardener _dirHardener;
     private readonly ITamperLog _tamperLog;
@@ -37,6 +38,7 @@ public sealed class WardenWorker : BackgroundService
         ICommandLineRecorder commandLines,
         IProtectedFolderMonitor folders,
         IVulnerableAppRepository vulnerableApps,
+        IRulesRepository rules,
         HardeningOptions hardening,
         DataDirectoryHardener dirHardener,
         ITamperLog tamperLog,
@@ -50,6 +52,7 @@ public sealed class WardenWorker : BackgroundService
         _commandLines = commandLines;
         _folders = folders;
         _vulnerableApps = vulnerableApps;
+        _rules = rules;
         _hardening = hardening;
         _dirHardener = dirHardener;
         _tamperLog = tamperLog;
@@ -63,6 +66,7 @@ public sealed class WardenWorker : BackgroundService
 
         await ApplyStartupHardeningAsync(stoppingToken).ConfigureAwait(false);
         await SeedVulnerableAppsAsync(stoppingToken).ConfigureAwait(false);
+        await AuditFolderAllowRulesAsync(stoppingToken).ConfigureAwait(false);
 
         _processStarts.ProcessStarted += _controller.RecordProcessStart;
         _processStarts.ProcessStarted += _tree.RecordStart;
@@ -150,6 +154,30 @@ public sealed class WardenWorker : BackgroundService
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Startup hardening failed (non-fatal).");
+        }
+    }
+
+    /// <summary>
+    /// Before any block is adjudicated, disable stored Folder → Allow rules on folders that non-administrators
+    /// can change (rules saved before that check existed). Runs on every start, in dev runs too. If the audit
+    /// itself fails, the folder allow rules stay as they were and the failure is recorded as a tamper event.
+    /// </summary>
+    private async Task AuditFolderAllowRulesAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            int disabled = await FolderRuleAudit.DisableUnsafeFolderAllowsAsync(
+                _rules, _tamperLog, _logger, cancellationToken: cancellationToken).ConfigureAwait(false);
+            if (disabled > 0)
+            {
+                _logger.LogWarning("Disabled {Count} folder allow rule(s) on folders non-administrators can change.", disabled);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogError(ex, "Folder allow rule audit failed.");
+            await _tamperLog.LogAsync("folder-allow-rule-audit-failed", ex.GetType().Name, "critical", cancellationToken)
+                .ConfigureAwait(false);
         }
     }
 
