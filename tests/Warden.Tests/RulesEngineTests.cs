@@ -25,7 +25,7 @@ public sealed class RulesEngineTests
     public async Task Block_rule_wins_over_a_matching_allow_rule()
     {
         var rules = new FakeRules(
-            Rule(RuleKind.Extension, ".exe", PolicyAction.Allow),
+            Rule(RuleKind.Folder, @"C:\x\", PolicyAction.Allow), // matches C:\x\a.exe on its own
             Rule(RuleKind.Hash, "ABC", PolicyAction.Block));
         var engine = new RulesEngine(rules, new FakeWhitelist());
 
@@ -50,7 +50,7 @@ public sealed class RulesEngineTests
     [Fact]
     public async Task RequireSignature_allow_declines_for_unsigned_file()
     {
-        var rules = new FakeRules(Rule(RuleKind.Extension, ".exe", PolicyAction.Allow, requireSignature: true));
+        var rules = new FakeRules(Rule(RuleKind.Folder, @"C:\x\", PolicyAction.Allow, requireSignature: true));
         var engine = new RulesEngine(rules, new FakeWhitelist());
 
         var result = await engine.EvaluateAsync(
@@ -62,13 +62,58 @@ public sealed class RulesEngineTests
     [Fact]
     public async Task RequireSignature_allow_permits_trusted_signed_file()
     {
-        var rules = new FakeRules(Rule(RuleKind.Extension, ".exe", PolicyAction.Allow, requireSignature: true));
+        var rules = new FakeRules(Rule(RuleKind.Folder, @"C:\x\", PolicyAction.Allow, requireSignature: true));
         var engine = new RulesEngine(rules, new FakeWhitelist());
 
         var result = await engine.EvaluateAsync(
             TestData.Context(imagePath: @"C:\x\a.exe", signer: TrustedSigner), default);
 
         Assert.Equal(Verdict.Allow, result.Verdict);
+    }
+
+    // ---- Extension rules -----------------------------------------------------------------------
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Given_a_stored_extension_allow_rule_When_a_trusted_signed_file_with_that_extension_launches_Then_the_rule_does_not_allow_it(bool requireSignature)
+    {
+        // An extension allow would be a global allow (any publicly-CA-signed .exe would pass), so a row stored
+        // before validation refused them must never match (fail closed).
+        var engine = new RulesEngine(
+            new FakeRules(Rule(RuleKind.Extension, ".exe", PolicyAction.Allow, requireSignature: requireSignature)),
+            new FakeWhitelist());
+
+        var result = await engine.EvaluateAsync(
+            TestData.Context(imagePath: @"C:\x\a.exe", signer: TrustedSigner), default);
+
+        Assert.Equal(Verdict.Unknown, result.Verdict);
+        Assert.False(result.Decisive);
+    }
+
+    [Fact]
+    public async Task Given_an_extension_block_rule_When_a_file_with_that_extension_launches_Then_it_is_blocked()
+    {
+        var engine = new RulesEngine(new FakeRules(Rule(RuleKind.Extension, ".scr", PolicyAction.Block)), new FakeWhitelist());
+
+        var result = await engine.EvaluateAsync(TestData.Context(imagePath: @"C:\x\a.SCR"), default);
+
+        Assert.Equal(Verdict.Block, result.Verdict);
+    }
+
+    [Fact]
+    public async Task Given_an_ignored_extension_allow_before_a_hash_allow_When_the_hash_matches_Then_the_hash_rule_allows()
+    {
+        var engine = new RulesEngine(
+            new FakeRules(
+                Rule(RuleKind.Extension, ".exe", PolicyAction.Allow),
+                Rule(RuleKind.Hash, "ABC", PolicyAction.Allow)),
+            new FakeWhitelist());
+
+        var result = await engine.EvaluateAsync(TestData.Context(imagePath: @"C:\x\a.exe", sha256: "ABC"), default);
+
+        Assert.Equal(Verdict.Allow, result.Verdict);
+        Assert.Contains("Hash", result.Reason, StringComparison.Ordinal);
     }
 
     [Fact]

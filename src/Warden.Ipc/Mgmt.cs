@@ -97,7 +97,14 @@ public sealed record WhoAmIPayload(bool IsAdministrator);
 public sealed record MgmtMessage(string Text);
 
 /// <summary>Argument for <see cref="MgmtOperations.WhitelistAllowFile"/>: allow one file by path, immediately.</summary>
-public sealed record AllowFilePayload(string Path);
+/// <param name="Path">The file to allow.</param>
+/// <param name="ExpectedSha256">
+/// Optional SHA-256 of the bytes the administrator looked at (the dialog hashes the file and shows it with the
+/// signer). When set, the service refuses unless the file it reads has exactly these bytes, so a file swapped
+/// between the administrator's pick and the service's copy is not allowed. Older callers omit it; the service
+/// then allows (and reports) the bytes it read.
+/// </param>
+public sealed record AllowFilePayload(string Path, string? ExpectedSha256 = null);
 
 /// <summary>
 /// Shape of the <see cref="MgmtOperations.RulesAdd"/> payload: <c>{ "Rule": &lt;RuleEntry&gt;, "SourcePath": "…" }</c>.

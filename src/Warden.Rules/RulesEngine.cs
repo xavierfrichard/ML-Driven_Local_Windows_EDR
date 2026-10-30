@@ -6,7 +6,8 @@ namespace Warden.Rules;
 /// <summary>
 /// Evaluates a blocked launch against the user-defined rules from the Rules panel. This is the first,
 /// cheapest tier of the decision pipeline: deterministic allow/block rules keyed on hash, signer
-/// certificate (allows need a verified signature and an exact publisher), folder or file extension.
+/// certificate (allows need a verified signature and an exact publisher), folder or file extension
+/// (extension rules can only block: a stored extension allow never matches).
 /// </summary>
 /// <remarks>
 /// <para>All enabled rules are matched against the context and combined <em>deny-wins</em>: any rule
@@ -134,8 +135,11 @@ public sealed class RulesEngine : IVerdictSource
 
             RuleKind.Folder => IsUnderFolder(context.ImagePath, value),
 
-            RuleKind.Extension =>
-                string.Equals(GetExtension(context.ImagePath), value, StringComparison.OrdinalIgnoreCase),
+            // Extension rules only block. An extension ALLOW (".exe → Allow") would be a global allow — even with
+            // RequireSignature, any publicly-CA-signed file would pass — so one stored before validation refused
+            // them never matches (fail closed).
+            RuleKind.Extension => rule.Action != PolicyAction.Allow
+                && string.Equals(GetExtension(context.ImagePath), value, StringComparison.OrdinalIgnoreCase),
 
             _ => false,
         };
