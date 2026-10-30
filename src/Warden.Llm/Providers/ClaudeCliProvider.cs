@@ -46,18 +46,102 @@ public sealed class ClaudeCliProvider : IVerdictLlmProvider
     // (0), which is the supported backend for any distributed build.
     public int Priority => 5;
 
-    // Enabled only with an ABSOLUTE executable path: a bare "claude" would be resolved through the PATH
-    // search order by a LocalSystem service, where a user-writable PATH entry means SYSTEM code execution.
-    public bool IsEnabled =>
-        _options.EnableClaudeCli
-        && !string.IsNullOrWhiteSpace(_options.ClaudeCliPath)
-        && Path.IsPathRooted(_options.ClaudeCliPath)
-        && !_options.ClaudeCliPath.StartsWith(@"\\", StringComparison.Ordinal);
+    // The CLI never auto-allows: its verdict is scraped from free text (FromToolCall = false) and, even if that
+    // changed, only the Anthropic API provider may produce an Allow.
+    public bool MayAutoAllow => false;
+
+    // Enabled only with a well-formed, fully-qualified local path to an .exe. The file-system trust check
+    // (owner + write access on the file and every parent folder) runs before every launch, in AnalyzeAsync.
+    public bool IsEnabled => _options.EnableClaudeCli && DescribePathProblem(_options.ClaudeCliPath) is null;
+
+    /// <summary>
+    /// Syntactic check of a configured CLI path. Returns null when the path is acceptable, otherwise a reason.
+    /// </summary>
+    /// <remarks>
+    /// Refused: empty values; anything that is not fully qualified (<c>claude</c>, <c>.\claude.exe</c>,
+    /// drive-relative <c>C:claude.exe</c>, rooted-without-drive <c>\claude.exe</c>); UNC and device paths in
+    /// either slash style (<c>\\host\share</c>, <c>//host/share</c>, <c>\\?\</c>, <c>\\.\</c>); a path that is
+    /// not already canonical (<c>..</c> segments, trailing dots or spaces, forward slashes); alternate data
+    /// streams; and any file that is not an <c>.exe</c> (a <c>.cmd</c>/<c>.bat</c>/<c>.ps1</c> runs through an
+    /// interpreter that loads further user-writable files).
+    /// </remarks>
+    public static string? DescribePathProblem(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return "No claude CLI path is configured.";
+        }
+        if (path.StartsWith(@"\\", StringComparison.Ordinal) || path.StartsWith("//", StringComparison.Ordinal)
+            || path.StartsWith(@"\/", StringComparison.Ordinal) || path.StartsWith(@"/\", StringComparison.Ordinal))
+        {
+            return "The claude CLI path is a UNC or device path; only a local path is accepted.";
+        }
+        if (!Path.IsPathFullyQualified(path))
+        {
+            return "The claude CLI path must be a fully-qualified local path (for example C:\\Program Files\\Claude\\claude.exe).";
+        }
+        if (path.Length < 4 || !char.IsAsciiLetter(path[0]) || path[1] != ':' || path[2] != '\\')
+        {
+            return "The claude CLI path must start with a drive letter and a backslash.";
+        }
+        if (path.IndexOf(':', 2) >= 0)
+        {
+            return "The claude CLI path names an alternate data stream.";
+        }
+        if (path.Contains('/', StringComparison.Ordinal))
+        {
+            return "The claude CLI path must use backslashes.";
+        }
+
+        string full;
+        try
+        {
+            full = Path.GetFullPath(path);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return "The claude CLI path is not a valid path.";
+        }
+        if (!string.Equals(full, path, StringComparison.OrdinalIgnoreCase))
+        {
+            return "The claude CLI path is not canonical (it has '..', '.', repeated separators, or trailing dots or spaces).";
+        }
+        if (!string.Equals(Path.GetExtension(path), ".exe", StringComparison.OrdinalIgnoreCase))
+        {
+            return "The claude CLI path must name an .exe; scripts such as .cmd, .bat or .ps1 are refused.";
+        }
+        return null;
+    }
 
     public async Task<LlmVerdict?> AnalyzeAsync(Dossier dossier, bool escalate, CancellationToken cancellationToken)
     {
         if (!IsEnabled)
         {
+            return null;
+        }
+
+        // The service runs as LocalSystem: whoever can replace claude.exe, or plant a DLL next to it, runs code
+        // as SYSTEM on the next launch. Verify ownership and write access of the file and every parent folder
+        // before EVERY launch. No check configured means no launch (fail closed).
+        Func<string, string?>? trustCheck = _options.ClaudeCliTrustCheck;
+        if (trustCheck is null)
+        {
+            _logger.LogError("claude CLI not launched: no file-trust check is configured for {Path}.", _options.ClaudeCliPath);
+            return null;
+        }
+        string? untrusted;
+        try
+        {
+            untrusted = trustCheck(_options.ClaudeCliPath);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "claude CLI not launched: the file-trust check for {Path} failed.", _options.ClaudeCliPath);
+            return null;
+        }
+        if (untrusted is not null)
+        {
+            _logger.LogError("claude CLI not launched: {Path} is not safe to run as SYSTEM: {Problem}", _options.ClaudeCliPath, untrusted);
             return null;
         }
 

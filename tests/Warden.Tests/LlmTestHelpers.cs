@@ -256,6 +256,7 @@ internal sealed class FakeLlmProvider : IVerdictLlmProvider
     public string Name { get; init; } = "fake";
     public int Priority { get; init; }
     public bool IsEnabled { get; init; } = true;
+    public bool MayAutoAllow { get; init; }
     public LlmVerdict? Result { get; init; }
 
     public int Calls { get; private set; }

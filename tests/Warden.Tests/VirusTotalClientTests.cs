@@ -98,6 +98,72 @@ public sealed class VirusTotalClientTests
         Assert.Equal(Verdict.Unknown, result.Verdict); // 35 real engines < 40 -> not auto-allowed
     }
 
+    [Fact]
+    public async Task Given_a_suspicious_vote_When_otherwise_clean_Then_the_file_is_not_auto_allowed()
+    {
+        // 64 engines say clean, one says "suspicious": that file is not clean.
+        const string json = "{\"data\":{\"attributes\":{\"last_analysis_stats\":"
+            + "{\"malicious\":0,\"suspicious\":1,\"harmless\":60,\"undetected\":4}}}}";
+        var options = new ReputationOptions { ApiKey = "k", AllowKnownClean = true, CleanMinEngines = 40 };
+        var cache = new FakeCache();
+        var client = Build(new StubHandler(_ => Ok(json)), cache, options);
+
+        var result = await client.EvaluateAsync(TestData.Context(sha256: Sha), default);
+
+        Assert.Equal(Verdict.Unknown, result.Verdict);
+        Assert.Equal(1, cache.Stored!.VtPositives); // the suspicious vote is recorded as flagged
+        Assert.Equal(65, cache.Stored.VtTotal);
+    }
+
+    [Fact]
+    public async Task Given_enough_suspicious_votes_When_evaluated_Then_the_file_stays_blocked()
+    {
+        const string json = "{\"data\":{\"attributes\":{\"last_analysis_stats\":"
+            + "{\"malicious\":2,\"suspicious\":3,\"harmless\":40,\"undetected\":20}}}}";
+        var client = Build(new StubHandler(_ => Ok(json)), new FakeCache(), new ReputationOptions { ApiKey = "k", BlockThreshold = 5 });
+
+        var result = await client.EvaluateAsync(TestData.Context(sha256: Sha), default);
+
+        Assert.Equal(Verdict.Block, result.Verdict);
+    }
+
+    [Fact]
+    public async Task Given_hostile_negative_counts_When_parsed_Then_they_cannot_cancel_a_detection()
+    {
+        const string json = "{\"data\":{\"attributes\":{\"last_analysis_stats\":"
+            + "{\"malicious\":1,\"suspicious\":-1,\"harmless\":60,\"undetected\":4}}}}";
+        var options = new ReputationOptions { ApiKey = "k", AllowKnownClean = true, CleanMinEngines = 40 };
+        var client = Build(new StubHandler(_ => Ok(json)), new FakeCache(), options);
+
+        var result = await client.EvaluateAsync(TestData.Context(sha256: Sha), default);
+
+        Assert.Equal(Verdict.Unknown, result.Verdict);
+    }
+
+    [Fact]
+    public async Task Given_a_404_When_cached_Then_it_expires_after_an_hour_not_a_day()
+    {
+        var cache = new FakeCache();
+        var client = Build(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.NotFound)), cache,
+            new ReputationOptions { ApiKey = "k" });
+
+        await client.EvaluateAsync(TestData.Context(sha256: Sha), default);
+
+        Assert.Equal(3600, cache.Stored!.TtlSecs);
+        Assert.Equal(TimeSpan.FromHours(1), new ReputationOptions().NotFoundCacheTtl);
+    }
+
+    [Fact]
+    public async Task Given_a_found_file_When_cached_Then_it_keeps_the_normal_ttl()
+    {
+        var cache = new FakeCache();
+        var client = Build(new StubHandler(_ => Ok(StatsJson(0, 60, 5))), cache, new ReputationOptions { ApiKey = "k" });
+
+        await client.EvaluateAsync(TestData.Context(sha256: Sha), default);
+
+        Assert.Equal((long)TimeSpan.FromDays(1).TotalSeconds, cache.Stored!.TtlSecs);
+    }
+
     private static VirusTotalClient Build(StubHandler handler, FakeCache cache, ReputationOptions options) =>
         new(new StubFactory(handler), cache, options, NullLogger<VirusTotalClient>.Instance);
 

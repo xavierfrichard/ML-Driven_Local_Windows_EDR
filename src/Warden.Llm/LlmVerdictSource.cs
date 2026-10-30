@@ -81,14 +81,15 @@ public sealed class LlmVerdictSource : IVerdictSource
                 continue; // provider failed / had no opinion — try the next
             }
 
-            return Map(verdict, provider.Name);
+            return Map(verdict, provider);
         }
 
         return VerdictResult.Undecided(Kind, "No LLM provider produced a verdict.");
     }
 
-    private VerdictResult Map(LlmVerdict verdict, string providerName)
+    private VerdictResult Map(LlmVerdict verdict, IVerdictLlmProvider provider)
     {
+        string providerName = provider.Name;
         string detail = verdict.Describe(providerName);
 
         switch (verdict.Disposition)
@@ -97,9 +98,11 @@ public sealed class LlmVerdictSource : IVerdictSource
                 return new VerdictResult(Verdict.Block, Kind, verdict.Confidence,
                     $"LLM analyst ({providerName}): malicious at {verdict.Confidence:F2} confidence.", detail);
 
-            // Auto-allow requires a verdict that came through the forced tool call. A "benign" scraped
-            // from free-form content (the local content fallback) can never clear a block — it defers.
+            // Auto-allow requires (1) the opt-in, (2) a provider allowed to auto-allow (the Anthropic API
+            // only: a local endpoint can be squatted, the CLI/OAuth paths are personal-use), and (3) a verdict
+            // that came through the forced tool call. Anything else defers to the prompt.
             case LlmDisposition.Benign when _options.AllowOnBenign
+                    && provider.MayAutoAllow
                     && verdict.FromToolCall && verdict.Confidence >= _options.BenignConfidenceThreshold:
                 return new VerdictResult(Verdict.Allow, Kind, verdict.Confidence,
                     $"LLM analyst ({providerName}): benign at {verdict.Confidence:F2} confidence.", detail);

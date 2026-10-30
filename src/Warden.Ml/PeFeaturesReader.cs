@@ -43,14 +43,13 @@ public sealed class PeFeaturesReader : IPeFeaturesReader
                 return PeFeatures.NotPortableExecutable;
             }
 
-            long length = new FileInfo(path).Length;
-            if (length > _options.MaxImageBytes)
+            // One handle for the size check and the read: the file cannot be swapped or grown in between.
+            byte[]? bytes = BoundedFile.ReadAll(path, _options.MaxImageBytes, out long length);
+            if (bytes is null)
             {
                 _logger.LogInformation("Not parsing {File}: {Size} bytes exceeds the PE parsing cap.", Path.GetFileName(path), length);
                 return PeFeatures.NotPortableExecutable;
             }
-
-            byte[] bytes = File.ReadAllBytes(path);
             if (!PeFile.IsPeFile(bytes))
             {
                 return PeFeatures.NotPortableExecutable;

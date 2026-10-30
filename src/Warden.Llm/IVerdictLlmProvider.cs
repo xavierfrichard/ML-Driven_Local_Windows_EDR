@@ -18,6 +18,14 @@ public interface IVerdictLlmProvider
     bool IsEnabled { get; }
 
     /// <summary>
+    /// True only for a provider whose "benign" verdict may clear a block when
+    /// <see cref="LlmOptions.AllowOnBenign"/> is on. Only the Anthropic API provider returns true: a local
+    /// endpoint can be squatted by any local user, the CLI's verdict is scraped from prose, and the OAuth
+    /// provider is a personal-use path. Their verdicts can only block or defer to the prompt.
+    /// </summary>
+    bool MayAutoAllow { get; }
+
+    /// <summary>
     /// Analyze a dossier. Returns null on any failure (disabled, network error, non-2xx, refusal, or an
     /// unparseable response) so the source falls through to the next provider or to the user prompt —
     /// a provider failure can never become a silent allow.

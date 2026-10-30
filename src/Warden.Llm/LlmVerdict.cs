@@ -45,6 +45,16 @@ public sealed record LlmVerdict(
     public bool FromToolCall { get; init; } = true;
 
     /// <summary>
+    /// Longest evidence / MITRE item kept, in characters. The model's output is shaped by attacker-controlled
+    /// input, and these strings reach the logs, the database and the UI, so each one is clipped (and control
+    /// and formatting characters such as newlines and bidi overrides are dropped).
+    /// </summary>
+    public const int MaxItemLength = 300;
+
+    /// <summary>Longest <see cref="SuggestedAction"/> kept, in characters (the schema allows one short word).</summary>
+    public const int MaxSuggestedActionLength = 32;
+
+    /// <summary>
     /// Parse the tool input object (Anthropic <c>tool_use.input</c> or an OpenAI
     /// <c>tool_calls[].function.arguments</c> object). Returns null if the object has no usable
     /// verdict, which the source maps to "undecided" (fail-safe: no verdict → prompt).
@@ -78,7 +88,7 @@ public sealed record LlmVerdict(
         }
 
         string action = input.TryGetProperty("suggested_action", out JsonElement a) && a.ValueKind == JsonValueKind.String
-            ? a.GetString() ?? string.Empty
+            ? Clean(a.GetString() ?? string.Empty, MaxSuggestedActionLength)
             : string.Empty;
 
         return new LlmVerdict(
@@ -125,7 +135,7 @@ public sealed record LlmVerdict(
             {
                 continue;
             }
-            string? s = e.GetString();
+            string s = Clean(e.GetString() ?? string.Empty, MaxItemLength);
             if (!string.IsNullOrWhiteSpace(s))
             {
                 builder.Add(s);
@@ -136,5 +146,40 @@ public sealed record LlmVerdict(
             }
         }
         return builder.ToImmutable();
+    }
+
+    /// <summary>Drops control and formatting characters (Cc/Cf: newlines, bidi overrides) and clips to <paramref name="max"/>.</summary>
+    internal static string Clean(string value, int max)
+    {
+        var sb = new StringBuilder(Math.Min(value.Length, max));
+        foreach (char ch in value)
+        {
+            if (sb.Length >= max)
+            {
+                break;
+            }
+            System.Globalization.UnicodeCategory cat = char.GetUnicodeCategory(ch);
+            if (cat == System.Globalization.UnicodeCategory.Format)
+            {
+                continue; // invisible formatting (bidi overrides, zero-width): drop outright
+            }
+            if (cat is System.Globalization.UnicodeCategory.Control
+                    or System.Globalization.UnicodeCategory.LineSeparator
+                    or System.Globalization.UnicodeCategory.ParagraphSeparator)
+            {
+                // Keep a word gap where a newline/tab separated words.
+                if (sb.Length > 0 && sb[^1] != ' ')
+                {
+                    sb.Append(' ');
+                }
+                continue;
+            }
+            sb.Append(ch);
+        }
+        if (sb.Length > 0 && char.IsHighSurrogate(sb[^1]))
+        {
+            sb.Length--; // never leave half a surrogate pair at the clip point
+        }
+        return sb.ToString().Trim();
     }
 }

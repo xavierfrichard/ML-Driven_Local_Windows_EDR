@@ -12,12 +12,21 @@ public sealed class ReputationOptions
     /// <summary>Cache time-to-live for a hash verdict.</summary>
     public TimeSpan CacheTtl { get; set; } = TimeSpan.FromDays(1);
 
-    /// <summary>Engine-detection count at or above which a file is decisively blocked.</summary>
+    /// <summary>
+    /// Cache time-to-live for a "not in VirusTotal" (404) answer. Short: a new sample is often uploaded and
+    /// scanned within the hour, and a day-long "unknown" would hide its detections.
+    /// </summary>
+    public TimeSpan NotFoundCacheTtl { get; set; } = TimeSpan.FromHours(1);
+
+    /// <summary>
+    /// Engine count at or above which a file is decisively blocked. Engines that report "malicious" and
+    /// engines that report "suspicious" both count (the cache stores one "flagged" number).
+    /// </summary>
     public int BlockThreshold { get; set; } = 5;
 
     /// <summary>
-    /// When true, a well-known clean file (zero detections across at least
-    /// <see cref="CleanMinEngines"/> engines) is decisively allowed. Off by default: a 0/N result is
+    /// When true, a well-known clean file (no engine reporting "malicious" <b>or</b> "suspicious", across at
+    /// least <see cref="CleanMinEngines"/> engines) is decisively allowed. Off by default: a 0/N result is
     /// weak evidence (new malware is undetected), so unknown files fall through to ML/LLM/prompt.
     /// </summary>
     public bool AllowKnownClean { get; set; }

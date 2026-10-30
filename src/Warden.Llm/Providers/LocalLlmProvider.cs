@@ -31,8 +31,12 @@ public sealed class LocalLlmProvider : IVerdictLlmProvider
 
     public int Priority => 10;
 
-    // Refuses a remote plain-http endpoint: the dossier and the bearer key would travel in clear text.
+    // Refuses a remote plain-http endpoint (clear text), and a loopback http endpoint unless explicitly
+    // opted in with a bearer key (see LlmOptions.LocalAllowLoopbackHttp).
     public bool IsEnabled => _options.EnableLocal && _options.LocalBaseAddressIsAcceptable;
+
+    // Any local user can squat a free loopback port and answer for the model: block or defer only.
+    public bool MayAutoAllow => false;
 
     public async Task<LlmVerdict?> AnalyzeAsync(Dossier dossier, bool escalate, CancellationToken cancellationToken)
     {
