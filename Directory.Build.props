@@ -16,4 +16,25 @@
     <NoWarn>$(NoWarn);CA1848;CA1305</NoWarn>
   </PropertyGroup>
 
+  <!-- Supply chain: pin the full package graph in packages.lock.json (committed next to each csproj).
+       A normal restore updates the lock file when a reference changes; a CI build
+       (ContinuousIntegrationBuild=true) restores in locked mode and fails if the graph differs from it.
+       Package sources are restricted to nuget.org by nuget.config (packageSourceMapping).
+       Warden.Ui and Warden.Ui.Tests are excluded for now: their references are being changed on the UI
+       branch, which should remove this exclusion and commit their lock files. -->
+  <PropertyGroup Condition="'$(MSBuildProjectName)' != 'Warden.Ui' and '$(MSBuildProjectName)' != 'Warden.Ui.Tests'">
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <RestoreLockedMode Condition="'$(ContinuousIntegrationBuild)' == 'true'">true</RestoreLockedMode>
+  </PropertyGroup>
+
+  <!-- Ignore DOTNET_STARTUP_HOOKS: with this off the runtime does not load startup-hook assemblies named
+       in the environment, so they cannot be injected into the LocalSystem service or the elevated tray UI
+       (writes System.StartupHookProvider.IsSupported=false to runtimeconfig.json). Side effect: dotnet watch
+       hot reload, which relies on a startup hook, does not apply to these projects.
+       Test projects keep hooks (test tooling may use them). IsTestProject is set in the test csproj, which
+       is evaluated after this file, so the test projects are also recognised by name. -->
+  <PropertyGroup Condition="'$(IsTestProject)' != 'true' and !$(MSBuildProjectName.EndsWith('.Tests')) and !$(MSBuildProjectName.Contains('.Tests.'))">
+    <StartupHookSupport>false</StartupHookSupport>
+  </PropertyGroup>
+
 </Project>

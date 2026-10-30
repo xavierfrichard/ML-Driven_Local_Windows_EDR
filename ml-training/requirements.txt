@@ -1,11 +1,21 @@
-# Warden ML training / parity environment. Python 3.11–3.14.
-numpy>=1.26
-lief>=0.15
-scikit-learn>=1.4
-lightgbm>=4.0
-onnx>=1.16
-onnxmltools>=1.12
-skl2onnx>=1.16
-onnxruntime>=1.18
+# Warden ML training / parity environment. Python 3.11–3.14 (every pin below has win_amd64 wheels for
+# CPython 3.11–3.14).
+# Exact pins so a training run cannot silently pick up a new (or compromised) release. To upgrade, change
+# a pin on purpose, re-run gen_byte_parity.py and `train.py --smoke`, and commit both together.
+# For hash-checked installs, generate a lock with: pip-compile --generate-hashes requirements.txt
+numpy==2.3.5
+scipy==1.16.3
+lief==0.17.6
+scikit-learn==1.8.0
+lightgbm==4.6.0
+onnx==1.21.0
+onnxconverter-common==1.16.0
+onnxmltools==1.16.0
+skl2onnx==1.20.0
+protobuf==6.33.6
+# The exported model uses target_opset=13 (IR 7), so the C# Microsoft.ML.OnnxRuntime 1.20.1 loads it
+# whatever onnx version wrote it. This Python runtime is only used to check the export.
+onnxruntime==1.24.4
 # Optional: the `ember` package, only needed for --ember-dir (pre-vectorized EMBER 2018/2024 features).
-# ember @ git+https://github.com/elastic/ember.git
+# Pin it to a commit, never a branch:
+# ember @ git+https://github.com/elastic/ember.git@<commit-sha>

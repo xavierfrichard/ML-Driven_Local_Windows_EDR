@@ -47,6 +47,20 @@ secrets.json
 *.p7b
 *.cer
 *.pfx
+*.p12
+*.snk
+*.pem
+*.key
+*.pvk
+
+# Local databases (warden.db and its WAL/shared-memory files hold machine state, never source)
+*.db
+*.sqlite
+*.db-wal
+*.db-shm
+
+# Per-user Claude Code settings
+.claude/settings.local.json
 kernel/**/x64/
 kernel/**/Debug/
 kernel/**/Release/

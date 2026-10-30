@@ -100,7 +100,7 @@ internal static class Program
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"Failed to start CodeIntegrity watcher: {ex.Message}");
+            Console.Error.WriteLine($"Failed to start CodeIntegrity watcher: {ConsoleText.Sanitize(ex.Message)}");
             return 3;
         }
 
@@ -113,7 +113,7 @@ internal static class Program
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine($"Kernel ETW session error: {ex.Message}");
+                Console.Error.WriteLine($"Kernel ETW session error: {ConsoleText.Sanitize(ex.Message)}");
                 stopped.Set();
             }
         })

@@ -114,7 +114,7 @@ SQLite via **`Microsoft.Data.Sqlite` + Dapper** (no EF Core, no migration framew
 
 ### UI — `Warden.Ui` (WPF tray, no MVVM)
 
-Tray app (`Hardcodet.NotifyIcon.Wpf`) in the interactive session. `MainWindow` is a `TabControl` with 9 management panels (Advanced, Web Apps, Attack Chains, Protected Folders, Whitelist, User Log, Command Lines, Quarantine, Rules) plus a Tamper Log tab. There are **no ViewModels** — code-behind reads the **shared `warden.db`** directly via the storage repositories (this is the testing/inspection surface; enforcement stays service-driven). The one thing over the pipe is prompt approval (`App.xaml.cs` + `PromptPipeClient`), which fails safe to keep-blocked.
+Tray app (`Hardcodet.NotifyIcon.Wpf`) in the interactive session. `MainWindow` is a `TabControl` with 9 management panels (Advanced, Web Apps, Attack Chains, Protected Folders, Whitelist, User Log, Command Lines, Quarantine, Rules) plus a Tamper Log tab. There are **no ViewModels** — the UI never opens `warden.db`: every read and change goes to the service over the management pipe (`MgmtPipeClient`, protocol in `Warden.Ipc` `MgmtProtocol`), so enforcement stays service-driven. Prompt approval uses its own pipe (`App.xaml.cs` + `PromptPipeClient`) and fails safe to keep-blocked.
 
 ### Hardening — `Warden.Hardening` (Phase 6, no PPL/ELAM)
 
