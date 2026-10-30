@@ -171,10 +171,13 @@ public ICommand SaveCommand => _saveCommand ??= new RelayCommand(
 - [x] Update code-behind to use ViewModels
 - [x] Create unit tests
 - [x] Update solution file
-- [ ] Verify all bindings work correctly
-- [ ] Run all tests and fix failures
-- [ ] Update file browse handlers to use ViewModel commands
-- [ ] Integrate dialog service throughout
+- [x] Verify all bindings work correctly
+- [x] Run all tests and fix failures
+- [x] Fix type safety issues in selected items
+- [x] Add Load*Async methods to MainWindowViewModel
+- [x] Add Refresh*_Click handlers to code-behind
+- [ ] Convert file browse handlers to use ViewModel commands (Phase 3)
+- [ ] Fully integrate dialog service throughout (Phase 3)
 
 ## Next Steps
 
