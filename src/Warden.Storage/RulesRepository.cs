@@ -46,4 +46,12 @@ public sealed class RulesRepository : IRulesRepository
             new CommandDefinition("DELETE FROM rules WHERE Id = @id;", new { id }, cancellationToken: cancellationToken))
             .ConfigureAwait(false);
     }
+
+    public async Task SetEnabledAsync(long id, bool enabled, CancellationToken cancellationToken = default)
+    {
+        await using var connection = _db.OpenConnection();
+        await connection.ExecuteAsync(
+            new CommandDefinition("UPDATE rules SET Enabled = @enabled WHERE Id = @id;", new { id, enabled }, cancellationToken: cancellationToken))
+            .ConfigureAwait(false);
+    }
 }

@@ -208,6 +208,7 @@ public sealed class RulesEngineTests
         public Task<IReadOnlyList<RuleEntry>> GetAllAsync(CancellationToken ct = default) =>
             Task.FromResult((IReadOnlyList<RuleEntry>)_rules);
         public Task DeleteAsync(long id, CancellationToken ct = default) => Task.CompletedTask;
+        public Task SetEnabledAsync(long id, bool enabled, CancellationToken ct = default) => Task.CompletedTask;
     }
 
     private sealed class FakeWhitelist : IWhitelistRepository

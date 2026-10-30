@@ -207,6 +207,31 @@ public sealed class FileInspectorSignatureTests
     }
 
     [Fact]
+    public void A_copy_held_open_read_only_with_writers_denied_still_verifies()
+    {
+        // The rule handler verifies a picked file's snapshot while holding it open (FileAccess.Read,
+        // FileShare.Read) so it cannot change mid-check. WinVerifyTrust must still be able to open it.
+        string? exe = FindMicrosoftSignedExe();
+        if (exe is null) { return; }
+
+        string copy = Path.Combine(Path.GetTempPath(), "warden-locked-" + Guid.NewGuid().ToString("N") + ".exe");
+        try
+        {
+            File.Copy(exe, copy);
+            using (var locked = new FileStream(copy, FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                SignerInfo s = new FileInspector().ReadSigner(copy);
+                Assert.True(s.IsTrustedSignature, $"WinVerifyTrust status 0x{s.VerificationStatus:X8}");
+                Assert.Throws<IOException>(() => new FileStream(copy, FileMode.Open, FileAccess.Write, FileShare.ReadWrite));
+            }
+        }
+        finally
+        {
+            try { File.Delete(copy); } catch (IOException) { }
+        }
+    }
+
+    [Fact]
     public void A_borrowed_signature_is_signed_but_invalid_and_not_microsoft()
     {
         string? exe = FindMicrosoftSignedExe();

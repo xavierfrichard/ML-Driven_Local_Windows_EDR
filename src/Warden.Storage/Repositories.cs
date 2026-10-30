@@ -42,4 +42,7 @@ public interface IRulesRepository
     Task<IReadOnlyList<RuleEntry>> GetEnabledAsync(CancellationToken cancellationToken = default);
     Task<IReadOnlyList<RuleEntry>> GetAllAsync(CancellationToken cancellationToken = default);
     Task DeleteAsync(long id, CancellationToken cancellationToken = default);
+
+    /// <summary>Turns a rule on or off without deleting it.</summary>
+    Task SetEnabledAsync(long id, bool enabled, CancellationToken cancellationToken = default);
 }
