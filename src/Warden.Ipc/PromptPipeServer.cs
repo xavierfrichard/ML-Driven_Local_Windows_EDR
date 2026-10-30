@@ -5,18 +5,24 @@ using System.Text.Json;
 namespace Warden.Ipc;
 
 /// <summary>
-/// Service-side (session 0) named-pipe host for the block-prompt channel. Hosts a single
-/// <see cref="NamedPipeServerStream"/> on <see cref="IpcProtocol.PipeName"/> and keeps at most one
-/// connected tray-UI client, reconnecting automatically when the client drops.
+/// Service-side (session 0) named-pipe host for the block-prompt channel. Serves at most one connected
+/// tray-UI client on <see cref="IpcProtocol.PipeName"/>, reconnecting automatically when the client drops.
 /// </summary>
 /// <remarks>
+/// <para><b>The name is never free.</b> Besides the connected instance the server always holds one
+/// listening instance: the next instance is created before the current one is served or disposed, and
+/// a failed connection does not leave a gap. Whenever the server holds no instance at all (start-up, or
+/// after a create failed) it creates with <c>FILE_FLAG_FIRST_PIPE_INSTANCE</c>, so a pre-created
+/// (squatted) pipe is detected and reported instead of joined (see <see cref="PipeInstanceSet{T}"/>).
+/// A second client that connects while one is being served waits on the listener and takes over when the
+/// first one leaves.</para>
 /// <para><b>Who may answer a prompt.</b> A prompt answer of <c>Allow</c> results in a persistent WDAC
 /// allow rule, so the peer must be authenticated. Three layers: (1) the pipe DACL admits only SYSTEM,
-/// Administrators and the service's own account (see <see cref="PipeGuard.BuildServerSecurity"/>), and
-/// the instance is created with <c>FILE_FLAG_FIRST_PIPE_INSTANCE</c> so a pre-created (squatted) pipe is
-/// detected instead of joined; (2) the client image name must be on the allow-list (the tray UI);
+/// Administrators and the service's own account (see <see cref="PipeGuard.BuildServerSecurity"/>);
+/// (2) the client's full image path must be the installed tray UI (<see cref="PipeGuard.PeerAllowed"/>);
 /// (3) an <c>Allow</c> reply is honoured only when the impersonated client token is an Administrators
-/// member — anything else is downgraded to KeepBlocked and reported.</para>
+/// member — anything else is downgraded to KeepBlocked and reported. Security events are rate-limited per
+/// category (<see cref="PipeServerOptions.SecurityEventInterval"/>).</para>
 /// <para>The wire format is newline-delimited UTF-8 JSON (<see cref="IpcProtocol.Json"/>), read through
 /// a <see cref="BoundedLineReader"/> so an oversized frame drops the connection instead of growing
 /// memory. Each <see cref="PromptRequest"/> is one line and the UI replies with one
@@ -33,9 +39,14 @@ public sealed class PromptPipeServer : IPromptPresenter, IDisposable
     /// <summary>Extra seconds added to the client-side auto-dismiss to bound the service-side wait.</summary>
     private const int GraceSeconds = 5;
 
+    /// <summary>One connected instance plus the listening one.</summary>
+    private const int MaxServerInstances = 2;
+
     private readonly Action<Exception>? _onError;
     private readonly Action<string>? _onSecurityEvent;
     private readonly PipeServerOptions _options;
+    private readonly SecurityEventThrottle _throttle;
+    private readonly PipeInstanceSet<NamedPipeServerStream> _instances = new();
     private readonly CancellationTokenSource _cts = new();
     private readonly SemaphoreSlim _writeLock = new(1, 1);
 
@@ -68,6 +79,7 @@ public sealed class PromptPipeServer : IPromptPresenter, IDisposable
         _onError = onError;
         _options = options ?? new PipeServerOptions();
         _onSecurityEvent = onSecurityEvent;
+        _throttle = new SecurityEventThrottle(_options.SecurityEventInterval);
     }
 
     /// <summary>True while a tray-UI client is connected and able to receive prompts.</summary>
@@ -180,67 +192,142 @@ public sealed class PromptPipeServer : IPromptPresenter, IDisposable
 
     private async Task AcceptLoopAsync(CancellationToken cancellationToken)
     {
-        while (!cancellationToken.IsCancellationRequested)
+        // The instance waiting for the next client. Kept across iterations so the name is always held.
+        NamedPipeServerStream? listener = null;
+        try
         {
-            NamedPipeServerStream? pipe = null;
-            bool backOff = false;
-            try
+            while (!cancellationToken.IsCancellationRequested)
             {
-                // Max one instance and FirstPipeInstance on every create: our previous instance is always
-                // disposed before the next create, so if the name already exists someone else owns it.
-                pipe = CreateServerStream();
-
-                await pipe.WaitForConnectionAsync(cancellationToken).ConfigureAwait(false);
-
-                if (!PeerAllowed(pipe))
-                {
-                    backOff = true; // don't let a rejected peer make us spin re-accepting it
-                    continue;
-                }
-
-                _currentPipe = pipe;
-                await ReadLoopAsync(pipe, cancellationToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                break;
-            }
-            catch (UnauthorizedAccessException ex)
-            {
-                // FirstPipeInstance: the name already exists and we did not create it → squatting attempt
-                // (or a second Warden instance). Report, back off, retry — never join it.
-                _onSecurityEvent?.Invoke($"Prompt pipe '{_options.PromptPipeName}' already exists and is not ours: {ex.Message}");
-                _onError?.Invoke(ex);
-                backOff = true;
-            }
-            catch (Exception ex)
-            {
-                // A broken connection (client crash, pipe error) is expected; log and rebuild the pipe.
-                _onError?.Invoke(ex);
-                backOff = true;
-            }
-            finally
-            {
-                _currentPipe = null;
-                FailPending();
-                pipe?.Dispose();
-            }
-
-            if (backOff)
-            {
+                NamedPipeServerStream? connected = null;
+                bool backOff = false;
                 try
                 {
-                    await Task.Delay(_options.RetryBackoff, cancellationToken).ConfigureAwait(false);
+                    listener ??= TryCreateInstance();
+                    if (listener is null)
+                    {
+                        backOff = true; // squatted or failed create: retry later, never join someone else's pipe
+                    }
+                    else if (!await TryAcceptAsync(listener, cancellationToken).ConfigureAwait(false))
+                    {
+                        // The instance broke before a client was accepted: replace it, creating the new one
+                        // before releasing the old so the name stays held.
+                        NamedPipeServerStream broken = listener;
+                        listener = TryCreateInstance();
+                        _instances.Release(broken);
+                        backOff = listener is null;
+                    }
+                    else
+                    {
+                        connected = listener;
+
+                        // Create the next listener before this connection is served or disposed, so the name
+                        // is never free. If that fails, the loop retries once this client is done.
+                        listener = TryCreateInstance();
+
+                        if (!PeerAllowed(connected))
+                        {
+                            backOff = true; // don't let a rejected peer make us spin re-accepting it
+                        }
+                        else
+                        {
+                            _currentPipe = connected;
+                            await ReadLoopAsync(connected, cancellationToken).ConfigureAwait(false);
+                        }
+                    }
                 }
-                catch (OperationCanceledException)
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
                     break;
                 }
+                catch (Exception ex)
+                {
+                    // A broken connection (client crash, pipe error) is expected; log it. The listener (if
+                    // any) is still up, so the next client is accepted without a gap.
+                    _onError?.Invoke(ex);
+                    backOff = listener is null;
+                }
+                finally
+                {
+                    if (connected is not null)
+                    {
+                        _currentPipe = null;
+                        FailPending();
+                        _instances.Release(connected);
+                    }
+                }
+
+                if (backOff)
+                {
+                    try
+                    {
+                        await Task.Delay(_options.RetryBackoff, cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        break;
+                    }
+                }
             }
+        }
+        finally
+        {
+            _instances.Release(listener);
         }
     }
 
-    private NamedPipeServerStream CreateServerStream()
+    /// <summary>Waits for a client. False when the instance broke (e.g. a client connected and left at once).</summary>
+    private async Task<bool> TryAcceptAsync(NamedPipeServerStream instance, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await instance.WaitForConnectionAsync(cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+        catch (IOException ex)
+        {
+            _onError?.Invoke(ex);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Creates a tracked instance, with <c>FILE_FLAG_FIRST_PIPE_INSTANCE</c> when the server holds none.
+    /// Returns null (after reporting) if the name is taken by someone else or the create fails.
+    /// </summary>
+    private NamedPipeServerStream? TryCreateInstance()
+    {
+        bool firstInstance = false;
+        try
+        {
+            return _instances.Create(first =>
+            {
+                firstInstance = first;
+                return CreateServerStream(first);
+            });
+        }
+        catch (ObjectDisposedException) when (_cts.IsCancellationRequested)
+        {
+            return null; // shutting down
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException || (firstInstance && ex is IOException))
+        {
+            // We held no instance, so the name already exists and is someone else's → squatting attempt
+            // (or a second Warden instance). FirstPipeInstance reports ACCESS_DENIED, or PIPE_BUSY when the
+            // squatter capped its instance count. Report (rate-limited), retry later — never join it.
+            ReportSecurityEvent(
+                PipeSecurityCategory.Squat,
+                $"Prompt pipe '{_options.PromptPipeName}' already exists and is not ours: {ex.Message}",
+                ex);
+            return null;
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException)
+        {
+            _onError?.Invoke(ex);
+            return null;
+        }
+    }
+
+    private NamedPipeServerStream CreateServerStream(bool firstInstance)
     {
         if (!OperatingSystem.IsWindows())
         {
@@ -248,30 +335,48 @@ public sealed class PromptPipeServer : IPromptPresenter, IDisposable
             return new NamedPipeServerStream(
                 _options.PromptPipeName,
                 PipeDirection.InOut,
-                maxNumberOfServerInstances: 1,
+                MaxServerInstances,
                 PipeTransmissionMode.Byte,
-                PipeOptions.Asynchronous);
+                PipeOptions.Asynchronous | (firstInstance ? PipeOptions.FirstPipeInstance : PipeOptions.None));
         }
 
-        return PipeGuard.CreateServer(_options.PromptPipeName, maxInstances: 1, firstInstance: true);
+        return PipeGuard.CreateServer(_options.PromptPipeName, MaxServerInstances, firstInstance);
     }
 
     private bool PeerAllowed(NamedPipeServerStream pipe)
     {
-        if (!OperatingSystem.IsWindows() || _options.AllowedClientImageNames.Count == 0)
+        if (!OperatingSystem.IsWindows()
+            || (_options.AllowedClientImagePaths.Count == 0 && string.IsNullOrEmpty(_options.DevUiImageName)))
         {
             return true;
         }
 
         PipePeer peer = PipeGuard.ResolvePeer(pipe);
-        if (PipeGuard.PeerImageAllowed(peer, (IReadOnlyCollection<string>)_options.AllowedClientImageNames))
+        if (PipeGuard.PeerAllowed(peer, _options))
         {
             return true;
         }
 
-        _onSecurityEvent?.Invoke(
-            $"Rejected prompt-pipe client pid {peer.ProcessId} image '{peer.ImagePath ?? "<unknown>"}' (not an allowed UI image).");
+        ReportSecurityEvent(
+            PipeSecurityCategory.PeerRejected,
+            $"Rejected prompt-pipe client pid {peer.ProcessId} image '{peer.ImagePath ?? "<unknown>"}' (not the installed UI).");
         return false;
+    }
+
+    /// <summary>Reports a security event, at most once per category per <see cref="PipeServerOptions.SecurityEventInterval"/>.</summary>
+    private void ReportSecurityEvent(string category, string message, Exception? error = null)
+    {
+        string? text = _throttle.Filter(category, message);
+        if (text is null)
+        {
+            return;
+        }
+
+        _onSecurityEvent?.Invoke(text);
+        if (error is not null)
+        {
+            _onError?.Invoke(error);
+        }
     }
 
     private async Task ReadLoopAsync(NamedPipeServerStream pipe, CancellationToken cancellationToken)
@@ -288,8 +393,7 @@ public sealed class PromptPipeServer : IPromptPresenter, IDisposable
             }
             catch (IpcFrameTooLargeException ex)
             {
-                _onSecurityEvent?.Invoke("Prompt-pipe client sent an oversized frame; connection dropped.");
-                _onError?.Invoke(ex);
+                ReportSecurityEvent(PipeSecurityCategory.OversizedFrame, "Prompt-pipe client sent an oversized frame; connection dropped.", ex);
                 return;
             }
 
@@ -328,7 +432,8 @@ public sealed class PromptPipeServer : IPromptPresenter, IDisposable
                 && _options.RequireAdministratorForAllow
                 && callerIsAdmin != true)
             {
-                _onSecurityEvent?.Invoke(
+                ReportSecurityEvent(
+                    PipeSecurityCategory.NonAdminAllow,
                     $"Prompt {response.RequestId} answered Allow by a non-Administrator client; downgraded to KeepBlocked.");
                 response = new PromptResponse(response.RequestId, PromptDecision.Timeout);
             }
@@ -374,8 +479,9 @@ public sealed class PromptPipeServer : IPromptPresenter, IDisposable
             // Already torn down.
         }
 
-        // Unblock WaitForConnectionAsync / ReadLineAsync and resolve outstanding prompts.
-        _currentPipe?.Dispose();
+        // Unblock WaitForConnectionAsync / ReadLineAsync (listener and connected instance) and resolve
+        // outstanding prompts.
+        _instances.Close();
         _currentPipe = null;
         FailPending();
 

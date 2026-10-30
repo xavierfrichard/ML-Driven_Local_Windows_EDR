@@ -31,7 +31,8 @@ public sealed class MgmtException : Exception
 /// <para><b>Server authentication.</b> The client connects with
 /// <see cref="TokenImpersonationLevel.Identification"/> — enough for the service's Administrators check,
 /// but a rogue pipe server can never <i>impersonate</i> the (elevated) UI — and refuses to talk to a
-/// pipe whose owner is not SYSTEM/Administrators/the current user (<see cref="PipeGuard.ServerLooksLegitimate"/>).</para>
+/// pipe that is not owned by SYSTEM and hosted by the WardenAgent service process
+/// (<see cref="PipeGuard.ServerLooksLegitimate(PipeStream)"/>; a current-user owner only in dev mode).</para>
 /// </remarks>
 public sealed class MgmtPipeClient : IDisposable
 {
@@ -39,12 +40,20 @@ public sealed class MgmtPipeClient : IDisposable
 
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly string _pipeName;
+    private readonly PipeServerTrust _serverTrust;
     private NamedPipeClientStream? _pipe;
     private BoundedLineReader? _reader;
     private bool _disposed;
 
-    /// <summary>Creates a client for the service's management pipe (name overridable for tests).</summary>
-    public MgmtPipeClient(string? pipeName = null) => _pipeName = string.IsNullOrWhiteSpace(pipeName) ? MgmtProtocol.PipeName : pipeName;
+    /// <summary>Creates a client for the service's management pipe.</summary>
+    /// <param name="pipeName">Pipe name (overridable for tests).</param>
+    /// <param name="serverTrust">Which servers to trust; defaults to <see cref="PipeServerTrust.Default"/>
+    /// (SYSTEM owner + the service's PID). Tests that host the server in-process pass a dev policy.</param>
+    public MgmtPipeClient(string? pipeName = null, PipeServerTrust? serverTrust = null)
+    {
+        _pipeName = string.IsNullOrWhiteSpace(pipeName) ? MgmtProtocol.PipeName : pipeName;
+        _serverTrust = serverTrust ?? PipeServerTrust.Default;
+    }
 
     /// <summary>True while a connection to the service is established.</summary>
     public bool IsConnected => _pipe is { IsConnected: true };
@@ -189,7 +198,7 @@ public sealed class MgmtPipeClient : IDisposable
             throw;
         }
 
-        if (OperatingSystem.IsWindows() && !PipeGuard.ServerLooksLegitimate(pipe))
+        if (OperatingSystem.IsWindows() && !PipeGuard.ServerLooksLegitimate(pipe, _serverTrust))
         {
             pipe.Dispose();
             throw new MgmtException(
