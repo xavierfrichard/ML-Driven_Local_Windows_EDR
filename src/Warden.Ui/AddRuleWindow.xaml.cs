@@ -5,6 +5,7 @@ using System.Windows;
 using System.Windows.Controls;
 using Microsoft.Win32;
 using Warden.Storage;
+using Warden.Ui.ViewModels;
 
 namespace Warden.Ui;
 
@@ -16,49 +17,32 @@ namespace Warden.Ui;
 /// </summary>
 public partial class AddRuleWindow : Window
 {
+    private readonly AddRuleWindowViewModel _viewModel;
+
     /// <summary>The rule the user built, or null if cancelled.</summary>
-    public RuleEntry? Result { get; private set; }
+    public RuleEntry? Result => _viewModel.Result;
 
     /// <summary>
     /// The file the match value was derived from (Hash / Signature rules picked through Browse…), so the
     /// service can allow-list that very file immediately instead of waiting for its next block.
     /// </summary>
-    public string? SourcePath { get; private set; }
+    public string? SourcePath => _viewModel.SourcePath;
 
     public AddRuleWindow()
     {
         InitializeComponent();
-        KindBox.ItemsSource = Enum.GetValues<RuleKind>();
-        ActionBox.ItemsSource = Enum.GetValues<PolicyAction>();
-        ActionBox.SelectedIndex = 0;
-        KindBox.SelectedIndex = 0;
+        
+        // Create and set the ViewModel
+        _viewModel = new AddRuleWindowViewModel();
+        DataContext = _viewModel;
     }
 
-    private RuleKind Kind => KindBox.SelectedItem is RuleKind k ? k : RuleKind.Hash;
+    private RuleKind Kind => _viewModel.SelectedKind;
 
     private void KindBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        SourcePath = null;
-        SourceHint.Text = string.Empty;
-        switch (Kind)
-        {
-            case RuleKind.Hash:
-                MatchHint.Text = "SHA-256 of the file (Browse… picks a file and computes it)";
-                BrowseButton.IsEnabled = true;
-                break;
-            case RuleKind.Signature:
-                MatchHint.Text = "Publisher name as it appears in the signing certificate (Browse… reads it from a signed file)";
-                BrowseButton.IsEnabled = true;
-                break;
-            case RuleKind.Folder:
-                MatchHint.Text = "Folder — applies to everything under it (Browse… picks a folder)";
-                BrowseButton.IsEnabled = true;
-                break;
-            default:
-                MatchHint.Text = "File extension including the dot, e.g. .exe";
-                BrowseButton.IsEnabled = false;
-                break;
-        }
+        _viewModel.SourcePath = null;
+        _viewModel.SourceHint = string.Empty;
     }
 
     private void Browse_Click(object sender, RoutedEventArgs e)
@@ -70,7 +54,7 @@ public partial class AddRuleWindow : Window
                 var dlg = new OpenFolderDialog { Title = "Choose the folder this rule applies to" };
                 if (dlg.ShowDialog(this) == true)
                 {
-                    MatchBox.Text = dlg.FolderName;
+                    _viewModel.MatchValue = dlg.FolderName;
                 }
                 break;
             }
@@ -81,9 +65,9 @@ public partial class AddRuleWindow : Window
                 try
                 {
                     using FileStream fs = File.OpenRead(file);
-                    MatchBox.Text = Convert.ToHexString(SHA256.HashData(fs));
-                    SourcePath = file;
-                    SourceHint.Text = $"From {file}";
+                    _viewModel.MatchValue = Convert.ToHexString(SHA256.HashData(fs));
+                    _viewModel.SourcePath = file;
+                    _viewModel.SourceHint = $"From {file}";
                 }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                 {
@@ -101,9 +85,9 @@ public partial class AddRuleWindow : Window
                     MessageBox.Show(this, error ?? "The file has no embedded signature.", "Add Rule", MessageBoxButton.OK, MessageBoxImage.Warning);
                     break;
                 }
-                MatchBox.Text = publisher;
-                SourcePath = file;
-                SourceHint.Text = $"From {file}";
+                _viewModel.MatchValue = publisher;
+                _viewModel.SourcePath = file;
+                _viewModel.SourceHint = $"From {file}";
                 break;
             }
         }
@@ -144,24 +128,19 @@ public partial class AddRuleWindow : Window
 
     private void Ok_Click(object sender, RoutedEventArgs e)
     {
-        string match = MatchBox.Text?.Trim() ?? string.Empty;
+        string match = _viewModel.MatchValue?.Trim() ?? string.Empty;
         if (string.IsNullOrEmpty(match))
         {
             MessageBox.Show(this, "Enter a match value or use Browse….", "Add Rule", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
-        Result = new RuleEntry
+        // Create the result via ViewModel
+        _viewModel.OkCommand.Execute(null);
+        
+        if (_viewModel.Result is not null)
         {
-            Kind = Kind,
-            MatchValue = match,
-            Action = (PolicyAction)ActionBox.SelectedItem,
-            RequireSignature = RequireSigBox.IsChecked == true,
-            RequireWhitelist = RequireWlBox.IsChecked == true,
-            Enabled = true,
-            CreatedTs = DateTimeOffset.UtcNow,
-            Note = string.IsNullOrWhiteSpace(NoteBox.Text) ? null : NoteBox.Text.Trim(),
-        };
-        DialogResult = true;
+            DialogResult = true;
+        }
     }
 }
