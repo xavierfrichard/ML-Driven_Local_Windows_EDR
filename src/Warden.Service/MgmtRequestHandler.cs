@@ -1,6 +1,4 @@
-using System.Security.Cryptography;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
 using Warden.Core;
 using Warden.Firewall;
@@ -131,104 +129,17 @@ public sealed partial class MgmtRequestHandler : IMgmtHandler
 
     // ---- validation helpers -----------------------------------------------------------------------
 
-    [GeneratedRegex("^[0-9A-Fa-f]{64}$")]
-    private static partial Regex Sha256Hex();
-
-    private static bool IsSha256(string? value) => value is not null && Sha256Hex().IsMatch(value);
+    private static bool IsSha256(string? value) => RuleValidator.IsSha256(value);
 
     /// <summary>A rooted, canonical local path that is not a bare drive root (so "C:\" cannot become a rule).</summary>
-    private static bool IsAcceptableLocalPath(string? value, bool allowDriveRoot, out string canonical, out string? error)
-    {
-        canonical = string.Empty;
-        error = null;
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            error = "Path is empty.";
-            return false;
-        }
+    private static bool IsAcceptableLocalPath(string? value, bool allowDriveRoot, out string canonical, out string? error) =>
+        RuleValidator.IsAcceptableLocalPath(value, allowDriveRoot, out canonical, out error);
 
-        try
-        {
-            canonical = Path.GetFullPath(value);
-        }
-        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
-        {
-            error = "Path is not a valid local path.";
-            return false;
-        }
-
-        if (!Path.IsPathRooted(canonical) || canonical.StartsWith(@"\\", StringComparison.Ordinal))
-        {
-            error = "Path must be a rooted local path (no UNC/device paths).";
-            return false;
-        }
-
-        if (!allowDriveRoot && Path.GetPathRoot(canonical) is { } root
-            && string.Equals(root, canonical.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
-        {
-            error = "A drive root is not accepted here (it would apply to everything on the volume).";
-            return false;
-        }
-
-        return true;
-    }
-
-    private static string? ValidateRule(RuleEntry rule)
-    {
-        if (string.IsNullOrWhiteSpace(rule.MatchValue))
-        {
-            return "Rule value is empty.";
-        }
-
-        if (!Enum.IsDefined(rule.Kind) || !Enum.IsDefined(rule.Action))
-        {
-            return "Rule kind/action is invalid.";
-        }
-
-        switch (rule.Kind)
-        {
-            case RuleKind.Hash:
-                return IsSha256(rule.MatchValue) ? null : "A hash rule needs a 64-hex-character SHA-256.";
-            case RuleKind.Signature:
-                if (rule.MatchValue.Trim().Length < 3)
-                {
-                    return "A signature rule needs at least 3 characters of publisher name.";
-                }
-                // Allow rules match the certificate's Common Name exactly (or its thumbprint), so a pasted
-                // subject DN would never match: say so now rather than store a rule that silently does nothing.
-                return rule.Action == PolicyAction.Allow && rule.MatchValue.Contains('=', StringComparison.Ordinal)
-                    ? "For an allow rule, enter the publisher's Common Name (for example \"Contoso Ltd\") or the signing certificate's thumbprint, not a subject string."
-                    : null;
-            case RuleKind.Folder:
-            {
-                // A folder ALLOW on a drive root is a global allow; a BLOCK on a drive root is fine.
-                if (!IsAcceptableLocalPath(rule.MatchValue, allowDriveRoot: rule.Action == PolicyAction.Block, out string canonical, out string? err))
-                {
-                    return err;
-                }
-                if (rule.Action != PolicyAction.Allow)
-                {
-                    return null;
-                }
-                // An ALLOW auto-allows (and permanently hash-allows in WDAC) anything launched from the folder,
-                // so only a folder that standard users cannot write to, or swap out, may carry one.
-                if (!Directory.Exists(canonical))
-                {
-                    return "A folder allow rule needs an existing folder, so its permissions can be checked.";
-                }
-                return FolderWriteAccess.FindProblem(canonical) is { } problem
-                    ? "This folder cannot carry an allow rule, because accounts other than SYSTEM and Administrators can change what is in it: "
-                      + problem + " Use a Hash or Signature rule instead, or lock the folder down first."
-                    : null;
-            }
-            case RuleKind.Extension:
-                return rule.MatchValue.StartsWith('.') && rule.MatchValue.Length >= 2 && !rule.MatchValue.Any(char.IsWhiteSpace)
-                    ? null
-                    : "An extension rule looks like \".exe\".";
-            default:
-                return "Rule kind is invalid.";
-        }
-    }
+    /// <summary>
+    /// Rule validation lives in <see cref="RuleValidator"/> (testable without the service host); the folder
+    /// allow check is the live ACL check.
+    /// </summary>
+    private static string? ValidateRule(RuleEntry rule) => RuleValidator.Validate(rule, folder => FolderWriteAccess.FindProblem(folder));
 
     /// <summary>
     /// Stores a rule in the form it is matched in: a folder as its canonical path with a trailing separator
@@ -249,56 +160,26 @@ public sealed partial class MgmtRequestHandler : IMgmtHandler
     }
 
     /// <summary>
-    /// Copies a picked file to a SYSTEM-only snapshot, verifies its Authenticode signature there, and checks the
-    /// signer against a signature allow rule. Returns the snapshot's SHA-256 (which the WDAC step then pins, so
-    /// the bytes allow-listed are the bytes verified), or null with a reason.
+    /// Snapshots a picked file into a SYSTEM-only folder (see <see cref="PinnedFileSnapshot"/>) and returns the
+    /// SHA-256 of the bytes the service read, for the WDAC step to pin, so the bytes allow-listed are the bytes
+    /// checked here. When <paramref name="expectedSha256"/> is set the bytes must match it (the hash the caller
+    /// judged). When <paramref name="publisher"/> is set the snapshot must also carry a verified signature from
+    /// exactly that publisher. Returns null with a reason otherwise.
     /// </summary>
-    private (string? Sha256, string? Refusal) VerifySignedSource(string path, string publisher)
+    private (string? Sha256, string? Refusal) PinSourceBytes(string path, string? expectedSha256, string? publisher)
     {
-        string? snapshot = null;
-        try
+        using PinnedFileSnapshot? snapshot = PinnedFileSnapshot.TryTake(
+            path, WardenPaths.Under("snapshots"), expectedSha256, out string? refusal);
+        if (snapshot is null)
         {
-            var info = new FileInfo(path);
-            if ((info.Attributes & FileAttributes.ReparsePoint) != 0)
-            {
-                return (null, "it is a symbolic link or junction.");
-            }
+            return (null, refusal ?? "it could not be read.");
+        }
 
-            string dir = WardenPaths.Under("snapshots");
-            Directory.CreateDirectory(dir);
-            snapshot = Path.Combine(dir, $"mgmt_{Guid.NewGuid():N}_{Path.GetFileName(path)}");
-
-            // Copy and hash in one pass. FileShare.Read on the source: nobody can modify it during the copy.
-            string copiedSha;
-            using (var source = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
-            {
-                if (source.Length > MaxVerifyBytes)
-                {
-                    return (null, "the file is larger than the size cap.");
-                }
-                using var target = new FileStream(snapshot, FileMode.CreateNew, FileAccess.Write, FileShare.None);
-                using var hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-                byte[] buffer = new byte[81920];
-                int read;
-                while ((read = source.Read(buffer, 0, buffer.Length)) > 0)
-                {
-                    hasher.AppendData(buffer, 0, read);
-                    target.Write(buffer, 0, read);
-                }
-                copiedSha = Convert.ToHexString(hasher.GetHashAndReset());
-            }
-
-            // Hold the copy open read-only, denying writers and deleters, until verification is done, and confirm
-            // it still holds the bytes just copied. So the signature checked and the hash pinned are of the same
-            // bytes, even if something else can reach the snapshot folder.
-            using var locked = new FileStream(snapshot, FileMode.Open, FileAccess.Read, FileShare.Read);
-            string lockedSha = Convert.ToHexString(SHA256.HashData(locked));
-            if (!string.Equals(lockedSha, copiedSha, StringComparison.Ordinal))
-            {
-                return (null, "the copy changed while it was being checked.");
-            }
-
-            SignerInfo signer = _inspector.ReadSigner(snapshot);
+        if (publisher is not null)
+        {
+            // The snapshot stays locked (no writers, no deleters) until it is disposed, so the signature read
+            // here belongs to the bytes whose hash is returned.
+            SignerInfo signer = _inspector.ReadSigner(snapshot.SnapshotPath);
             if (!signer.IsTrustedSignature)
             {
                 return (null, "its signature did not verify (unsigned, self-signed, tampered, or copied from another file).");
@@ -307,24 +188,10 @@ public sealed partial class MgmtRequestHandler : IMgmtHandler
             {
                 return (null, $"it is signed by '{signer.SubjectCommonName ?? signer.SubjectName}', not exactly '{publisher}'.");
             }
+        }
 
-            return (lockedSha, null);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
-        {
-            _logger.LogWarning(ex, "Mgmt: could not verify {Path}.", path);
-            return (null, "it could not be read.");
-        }
-        finally
-        {
-            if (snapshot is not null)
-            {
-                try { File.Delete(snapshot); } catch (IOException) { } catch (UnauthorizedAccessException) { }
-            }
-        }
+        return (snapshot.Sha256, null);
     }
-
-    private const long MaxVerifyBytes = 256L * 1024 * 1024;
 
     // ---- mutations --------------------------------------------------------------------------------
 
@@ -363,23 +230,23 @@ public sealed partial class MgmtRequestHandler : IMgmtHandler
             && IsAcceptableLocalPath(sourcePath, allowDriveRoot: false, out string sourceCanonical, out _)
             && File.Exists(sourceCanonical))
         {
-            string? expected = rule.MatchValue;
-            if (rule.Kind == RuleKind.Signature)
+            // Hash rule: the bytes must be the ones the rule names. Signature rule: the bytes the service read and
+            // verified. Either way the WDAC step is pinned to a hash the service checked itself.
+            (string? pinned, string? refusal) = rule.Kind == RuleKind.Hash
+                ? PinSourceBytes(sourceCanonical, rule.MatchValue, publisher: null)
+                : PinSourceBytes(sourceCanonical, expectedSha256: null, rule.MatchValue);
+            if (pinned is null)
             {
-                (expected, string? refusal) = VerifySignedSource(sourceCanonical, rule.MatchValue);
-                if (expected is null)
-                {
-                    _logger.LogWarning("Mgmt: rule {Id} source {Path} not allow-listed: {Reason}", newId, sourceCanonical, refusal);
-                    return Message(id, $"Rule added, but {Path.GetFileName(sourceCanonical)} was not allow-listed now: {refusal}");
-                }
+                _logger.LogWarning("Mgmt: rule {Id} source {Path} not allow-listed: {Reason}", newId, sourceCanonical, refusal);
+                return Message(id, $"Rule added, but {Path.GetFileName(sourceCanonical)} was not allow-listed now: {refusal}");
             }
 
             WdacBatchResult batch = await _wdac.AllowManyAsync(
-                new[] { new WdacAllowFile(sourceCanonical, expected) }, cancellationToken).ConfigureAwait(false);
+                new[] { new WdacAllowFile(sourceCanonical, pinned) }, cancellationToken).ConfigureAwait(false);
             WdacFileAllowResult r = batch.Files[0];
-            if (batch.Success && r.Success && r.Sha256 is not null)
+            if (batch.Success && r.Success && PinHeld(pinned, r))
             {
-                await RecordAdminAllowAsync(sourceCanonical, r.Sha256, "Rules", newId, cancellationToken).ConfigureAwait(false);
+                await RecordAdminAllowAsync(sourceCanonical, pinned, "Rules", newId, cancellationToken).ConfigureAwait(false);
                 return Message(id, rule.Kind == RuleKind.Hash
                     ? $"Rule added and {Path.GetFileName(sourceCanonical)} allow-listed in WDAC now. Relaunch the app."
                     : $"Rule added; {Path.GetFileName(sourceCanonical)} allow-listed in WDAC now. Other files from this publisher are allowed on their next launch.");
@@ -398,12 +265,17 @@ public sealed partial class MgmtRequestHandler : IMgmtHandler
 
         if (rule.Action == PolicyAction.Allow && rule.Kind == RuleKind.Hash)
         {
+            // A file seen before with this hash: allow-list it now, pinned to the hash the administrator entered
+            // (the WDAC step refuses if the file at the recorded path no longer has those bytes).
             WhitelistEntry? known = await _whitelist.FindLatestBySha256Async(rule.MatchValue, cancellationToken).ConfigureAwait(false);
-            if (known is not null && File.Exists(known.ProcessPath))
+            if (known is not null
+                && string.Equals(known.Sha256, rule.MatchValue, StringComparison.OrdinalIgnoreCase)
+                && IsAcceptableLocalPath(known.ProcessPath, allowDriveRoot: false, out string knownPath, out _)
+                && File.Exists(knownPath))
             {
                 WdacBatchResult batch = await _wdac.AllowManyAsync(
-                    new[] { new WdacAllowFile(known.ProcessPath, known.Sha256) }, cancellationToken).ConfigureAwait(false);
-                if (batch.Success && batch.Allowed == 1)
+                    new[] { new WdacAllowFile(knownPath, rule.MatchValue) }, cancellationToken).ConfigureAwait(false);
+                if (batch.Success && batch.Allowed == 1 && PinHeld(rule.MatchValue, batch.Files[0]))
                 {
                     await _whitelist.SetActionAsync(known.Id, PolicyAction.Allow, cancellationToken).ConfigureAwait(false);
                     return Message(id, $"Rule added and WDAC allow rule deployed for {known.ProcessName}; relaunch the app.");
@@ -465,14 +337,39 @@ public sealed partial class MgmtRequestHandler : IMgmtHandler
             return "Rule added. No executable files were found under the folder; anything launched from it will be allowed on its next launch.";
         }
 
-        WdacBatchResult batch = await _wdac.AllowManyAsync(
-            candidates.Select(c => new WdacAllowFile(c, null)).ToList(), cancellationToken).ConfigureAwait(false);
+        // Pin every file to the hash the service reads now. The folder was checked to be writable only by
+        // SYSTEM and Administrators, so no copy is needed; the pin still makes the WDAC step refuse a file whose
+        // bytes differ from the ones read here.
+        var pinned = new List<WdacAllowFile>(candidates.Count);
+        int unreadable = 0;
+        foreach (string c in candidates)
+        {
+            if (PinnedFileSnapshot.TryHash(c, out string? hashRefusal) is { } sha)
+            {
+                pinned.Add(new WdacAllowFile(c, sha));
+            }
+            else
+            {
+                _logger.LogWarning("Mgmt: {File} not allow-listed with folder rule {Id}: {Reason}", c, ruleId, hashRefusal);
+                unreadable++;
+            }
+        }
+        if (pinned.Count == 0)
+        {
+            return "Rule added, but none of the executable files under the folder could be read. They will be allowed on their next launch.";
+        }
+
+        WdacBatchResult batch = await _wdac.AllowManyAsync(pinned, cancellationToken).ConfigureAwait(false);
 
         int recorded = 0;
-        foreach (WdacFileAllowResult r in batch.Files.Where(r => r.Success && r.Sha256 is not null))
+        for (int i = 0; i < batch.Files.Count && i < pinned.Count; i++)
         {
-            await RecordAdminAllowAsync(r.Path, r.Sha256!, "Rules", ruleId, cancellationToken).ConfigureAwait(false);
-            recorded++;
+            WdacFileAllowResult r = batch.Files[i];
+            if (r.Success && PinHeld(pinned[i].ExpectedSha256!, r))
+            {
+                await RecordAdminAllowAsync(pinned[i].Path, pinned[i].ExpectedSha256!, "Rules", ruleId, cancellationToken).ConfigureAwait(false);
+                recorded++;
+            }
         }
 
         if (!batch.Success)
@@ -484,7 +381,7 @@ public sealed partial class MgmtRequestHandler : IMgmtHandler
         string more = candidates.Count >= MaxBulkAllowFiles || totalBytes > MaxBulkAllowBytes
             ? " (stopped at the size or file-count cap; the rest are allowed on launch)"
             : string.Empty;
-        return $"Rule added and {recorded} file(s) allow-listed in WDAC now, {batch.Skipped} skipped{more}. Relaunch the app.";
+        return $"Rule added and {recorded} file(s) allow-listed in WDAC now, {batch.Skipped + unreadable} skipped{more}. Relaunch the app.";
     }
 
     private const int MaxBulkAllowFiles = 500;
@@ -537,9 +434,15 @@ public sealed partial class MgmtRequestHandler : IMgmtHandler
 
     /// <summary>
     /// "Allow file…": an administrator picks a file; it is hash-allow-listed in WDAC immediately and recorded
-    /// as an Allow row (Source = Admin) so the whitelist tier replays it. The bytes present now are the
-    /// bytes allowed.
+    /// as an Allow row (Source = Admin) so the whitelist tier replays it.
     /// </summary>
+    /// <remarks>
+    /// The service snapshots the file and pins the WDAC rule to the hash of the bytes it read, so what is
+    /// allow-listed is what was hashed here (the WDAC step refuses a file that changes in between). When the
+    /// caller sends <see cref="AllowFilePayload.ExpectedSha256"/> — the hash of the bytes the administrator was
+    /// shown — the file must still have exactly those bytes, which closes the window between the pick and the
+    /// service's copy. Without it (older callers) the bytes read now are allowed, and their hash is reported.
+    /// </remarks>
     private async Task<MgmtResponse> AllowFileAsync(Guid id, string? payload, CancellationToken cancellationToken)
     {
         if (!TryParse(payload, out AllowFilePayload? arg, out string? error))
@@ -547,7 +450,13 @@ public sealed partial class MgmtRequestHandler : IMgmtHandler
             return MgmtResponse.Fail(id, error);
         }
 
-        if (!IsAcceptableLocalPath(arg!.Path, allowDriveRoot: false, out string canonical, out string? invalid))
+        string? expected = string.IsNullOrWhiteSpace(arg!.ExpectedSha256) ? null : arg.ExpectedSha256.Trim();
+        if (expected is not null && !IsSha256(expected))
+        {
+            return MgmtResponse.Fail(id, "ExpectedSha256 must be a 64-hex-character SHA-256.");
+        }
+
+        if (!IsAcceptableLocalPath(arg.Path, allowDriveRoot: false, out string canonical, out string? invalid))
         {
             return MgmtResponse.Fail(id, invalid!);
         }
@@ -556,18 +465,32 @@ public sealed partial class MgmtRequestHandler : IMgmtHandler
             return MgmtResponse.Fail(id, "The file does not exist.");
         }
 
-        WdacBatchResult batch = await _wdac.AllowManyAsync(new[] { new WdacAllowFile(canonical, null) }, cancellationToken).ConfigureAwait(false);
-        WdacFileAllowResult r = batch.Files[0];
-        if (!batch.Success || !r.Success || r.Sha256 is null)
+        (string? pinned, string? refusal) = PinSourceBytes(canonical, expected, publisher: null);
+        if (pinned is null)
         {
-            _logger.LogError("Mgmt: allow-file failed for {Path}: {Error}", canonical, batch.Error ?? r.Error);
-            return MgmtResponse.Fail(id, "WDAC allow failed: " + (batch.Error ?? r.Error ?? "unknown error"));
+            _logger.LogWarning("Mgmt: allow-file refused for {Path}: {Reason}", canonical, refusal);
+            return MgmtResponse.Fail(id, $"{Path.GetFileName(canonical)} was not allowed: {refusal}");
         }
 
-        await RecordAdminAllowAsync(canonical, r.Sha256, "Admin", null, cancellationToken).ConfigureAwait(false);
-        _logger.LogInformation("Mgmt: file allow-listed by administrator: {Sha} {Path}", r.Sha256, canonical);
-        return Message(id, $"{Path.GetFileName(canonical)} is now allowed (WDAC rule deployed). Relaunch the app.");
+        WdacBatchResult batch = await _wdac.AllowManyAsync(new[] { new WdacAllowFile(canonical, pinned) }, cancellationToken).ConfigureAwait(false);
+        WdacFileAllowResult r = batch.Files[0];
+        if (!batch.Success || !r.Success || !PinHeld(pinned, r))
+        {
+            _logger.LogError("Mgmt: allow-file failed for {Path}: {Error}", canonical, batch.Error ?? r.Error);
+            return MgmtResponse.Fail(id, "WDAC allow failed: " + (batch.Error ?? r.Error ?? "the allow-listed bytes were not the ones checked"));
+        }
+
+        await RecordAdminAllowAsync(canonical, pinned, "Admin", null, cancellationToken).ConfigureAwait(false);
+        _logger.LogInformation("Mgmt: file allow-listed by administrator: {Sha} {Path}", pinned, canonical);
+        return Message(id, $"{Path.GetFileName(canonical)} (SHA-256 {pinned}) is now allowed (WDAC rule deployed). Relaunch the app.");
     }
+
+    /// <summary>
+    /// True when the WDAC manager reports allow-listing exactly the pinned bytes. The manager already refuses a
+    /// mismatch; this keeps the handler from recording a hash it did not pin if a manager ever reports otherwise.
+    /// </summary>
+    private static bool PinHeld(string pinnedSha256, WdacFileAllowResult result) =>
+        result.Sha256 is not null && string.Equals(result.Sha256, pinnedSha256, StringComparison.OrdinalIgnoreCase);
 
     private static MgmtResponse Message(Guid id, string text) =>
         MgmtResponse.Success(id, JsonSerializer.Serialize(new MgmtMessage(text), IpcProtocol.Json));
@@ -660,10 +583,11 @@ public sealed partial class MgmtRequestHandler : IMgmtHandler
             return Message(id, $"{normalized.ProcessName} recorded as Allow. The file is not at that path, so the WDAC rule will be deployed on its next launch (blocked once, then allowed).");
         }
 
+        // Pinned to the hash the administrator entered: WDAC refuses the file unless it has exactly those bytes.
         WdacBatchResult batch = await _wdac.AllowManyAsync(
             new[] { new WdacAllowFile(canonical, normalized.Sha256) }, cancellationToken).ConfigureAwait(false);
         WdacFileAllowResult r = batch.Files[0];
-        if (batch.Success && r.Success)
+        if (batch.Success && r.Success && PinHeld(normalized.Sha256, r))
         {
             return Message(id, $"{normalized.ProcessName} is now allowed (WDAC rule deployed). Relaunch the app.");
         }
@@ -714,15 +638,19 @@ public sealed partial class MgmtRequestHandler : IMgmtHandler
         await _whitelist.SetActionAsync(arg.Id, action, cancellationToken).ConfigureAwait(false);
         _logger.LogInformation("Mgmt: whitelist entry {Id} set to {Action}.", arg.Id, action);
 
-        if (!IsSha256(entry.Sha256) || string.IsNullOrWhiteSpace(entry.ProcessPath) || !File.Exists(entry.ProcessPath))
+        if (!IsSha256(entry.Sha256)
+            || !IsAcceptableLocalPath(entry.ProcessPath, allowDriveRoot: false, out string recordedPath, out _)
+            || !File.Exists(recordedPath))
         {
             return Message(id, $"{entry.ProcessName} set to Allow. The file is not at its recorded path, so the WDAC rule will be deployed on its next launch (blocked once, then allowed).");
         }
 
+        // Pinned to the recorded hash (the bytes that were judged when the row was written): WDAC refuses the
+        // file at that path unless it still has exactly those bytes.
         WdacBatchResult batch = await _wdac.AllowManyAsync(
-            new[] { new WdacAllowFile(entry.ProcessPath, entry.Sha256) }, cancellationToken).ConfigureAwait(false);
+            new[] { new WdacAllowFile(recordedPath, entry.Sha256) }, cancellationToken).ConfigureAwait(false);
         WdacFileAllowResult r = batch.Files[0];
-        if (batch.Success && r.Success)
+        if (batch.Success && r.Success && PinHeld(entry.Sha256, r))
         {
             return Message(id, $"{entry.ProcessName} is now allowed (WDAC rule deployed). Relaunch the app.");
         }
