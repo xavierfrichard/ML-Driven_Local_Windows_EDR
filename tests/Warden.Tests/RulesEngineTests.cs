@@ -89,6 +89,101 @@ public sealed class RulesEngineTests
         Assert.Equal(Verdict.Allow, (await withWhitelist.EvaluateAsync(ctx, default)).Verdict);
     }
 
+    // ---- Signature rules -----------------------------------------------------------------------
+
+    private const string Thumb = "AABBCCDDEEFF00112233445566778899AABBCCDD";
+
+    private static SignerInfo Signer(string subject, bool valid, string thumb = Thumb) =>
+        new(IsSigned: true, IsValid: valid, subject, "CN=Some CA", thumb, IsMicrosoft: false);
+
+    [Fact]
+    public async Task Signature_allow_does_not_match_an_invalid_signature_even_without_RequireSignature()
+    {
+        var engine = new RulesEngine(new FakeRules(Rule(RuleKind.Signature, "Google LLC", PolicyAction.Allow)), new FakeWhitelist());
+
+        var result = await engine.EvaluateAsync(
+            TestData.Context(imagePath: @"C:\x\evil.exe", signer: Signer("CN=Google LLC", valid: false)), default);
+
+        Assert.Equal(Verdict.Unknown, result.Verdict);
+    }
+
+    [Theory]
+    [InlineData("CN=x, O=Google LLC")]      // the name only in another attribute
+    [InlineData("CN=Not Google LLC Ltd")]   // the name as a substring of the CN
+    [InlineData("CN=Google LLC Evil")]
+    public async Task Signature_allow_needs_the_exact_common_name(string subject)
+    {
+        var engine = new RulesEngine(new FakeRules(Rule(RuleKind.Signature, "Google LLC", PolicyAction.Allow)), new FakeWhitelist());
+
+        var result = await engine.EvaluateAsync(
+            TestData.Context(imagePath: @"C:\x\a.exe", signer: Signer(subject, valid: true)), default);
+
+        Assert.Equal(Verdict.Unknown, result.Verdict);
+    }
+
+    [Theory]
+    [InlineData("CN=Google LLC, O=Google LLC, L=Mountain View, C=US")]
+    [InlineData("CN=google llc")]
+    [InlineData("CN=\"Google LLC\", O=Google")]
+    public async Task Signature_allow_matches_a_verified_signature_with_the_exact_common_name(string subject)
+    {
+        var engine = new RulesEngine(new FakeRules(Rule(RuleKind.Signature, " Google LLC ", PolicyAction.Allow)), new FakeWhitelist());
+
+        var result = await engine.EvaluateAsync(
+            TestData.Context(imagePath: @"C:\x\a.exe", signer: Signer(subject, valid: true)), default);
+
+        Assert.Equal(Verdict.Allow, result.Verdict);
+    }
+
+    [Fact]
+    public void Signature_allow_by_thumbprint_matches_only_that_certificate()
+    {
+        Assert.True(RulesEngine.SignatureAllowMatches("aabb ccdd eeff 0011 2233 4455 6677 8899 aabb ccdd", Signer("CN=Anyone", true)));
+        Assert.False(RulesEngine.SignatureAllowMatches(Thumb, Signer("CN=Anyone", true, "1111111111111111111111111111111111111111")));
+        Assert.False(RulesEngine.SignatureAllowMatches(Thumb, Signer("CN=Anyone", valid: false)));
+    }
+
+    [Fact]
+    public async Task Signature_block_still_matches_a_spoofed_name()
+    {
+        // Deny-wins: a block may match loosely, including an invalid signature that merely claims the name.
+        var engine = new RulesEngine(new FakeRules(Rule(RuleKind.Signature, "Contoso", PolicyAction.Block)), new FakeWhitelist());
+
+        var result = await engine.EvaluateAsync(
+            TestData.Context(imagePath: @"C:\x\a.exe", signer: Signer("CN=x, O=Contoso Ltd", valid: false)), default);
+
+        Assert.Equal(Verdict.Block, result.Verdict);
+    }
+
+    // ---- Folder rules --------------------------------------------------------------------------
+
+    [Theory]
+    [InlineData(@"C:\Tools", @"C:\Tools\a.exe", true)]
+    [InlineData(@"C:\Tools\", @"C:\Tools\sub\a.exe", true)]
+    [InlineData(@"c:\tools", @"C:\TOOLS\a.exe", true)]
+    [InlineData(@"C:/Tools", @"C:\Tools\a.exe", true)]
+    [InlineData(@"C:\Tools", @"C:\Tools2\a.exe", false)]
+    [InlineData(@"C:\Tools", @"C:\ToolsX\evil.exe", false)]
+    [InlineData(@"C:\Users\bob\App", @"C:\Users\bob\AppData\Local\evil.exe", false)]
+    [InlineData(@"C:\Tools", @"C:\Tools", false)]
+    [InlineData(@"C:\Tools", "", false)]
+    public void Folder_rule_matches_only_inside_the_directory(string folder, string image, bool expected)
+    {
+        Assert.Equal(expected, RulesEngine.IsUnderFolder(image, folder));
+    }
+
+    [Fact]
+    public async Task Folder_allow_without_trailing_separator_does_not_cover_a_sibling_folder()
+    {
+        var engine = new RulesEngine(new FakeRules(Rule(RuleKind.Folder, @"C:\Tools", PolicyAction.Allow)), new FakeWhitelist());
+
+        var sibling = await engine.EvaluateAsync(TestData.Context(imagePath: @"C:\ToolsX\evil.exe"), default);
+        var inside = await engine.EvaluateAsync(TestData.Context(imagePath: @"C:\Tools\ok.exe"), default);
+
+        Assert.Equal(Verdict.Unknown, sibling.Verdict);
+        Assert.Equal(Verdict.Allow, inside.Verdict);
+    }
+
     private static RuleEntry Rule(
         RuleKind kind, string value, PolicyAction action,
         bool requireSignature = false, bool requireWhitelist = false) => new()

@@ -1,9 +1,13 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
+using Warden.Core;
 using Warden.Firewall;
+using Warden.Hardening;
 using Warden.Ipc;
+using Warden.Rules;
 using Warden.Storage;
+using Warden.Trust;
 using Warden.Wdac;
 
 namespace Warden.Service;
@@ -37,6 +41,7 @@ public sealed partial class MgmtRequestHandler : IMgmtHandler
     private readonly ITamperLogRepository _tamper;
     private readonly IFirewallRuleManager _firewall;
     private readonly IWdacAllowlistManager _wdac;
+    private readonly IFileInspector _inspector;
     private readonly ILogger<MgmtRequestHandler> _logger;
 
     public MgmtRequestHandler(
@@ -53,6 +58,7 @@ public sealed partial class MgmtRequestHandler : IMgmtHandler
         ITamperLogRepository tamper,
         IFirewallRuleManager firewall,
         IWdacAllowlistManager wdac,
+        IFileInspector inspector,
         ILogger<MgmtRequestHandler> logger)
     {
         _whitelist = whitelist;
@@ -68,6 +74,7 @@ public sealed partial class MgmtRequestHandler : IMgmtHandler
         _tamper = tamper;
         _firewall = firewall;
         _wdac = wdac;
+        _inspector = inspector;
         _logger = logger;
     }
 
@@ -182,10 +189,37 @@ public sealed partial class MgmtRequestHandler : IMgmtHandler
             case RuleKind.Hash:
                 return IsSha256(rule.MatchValue) ? null : "A hash rule needs a 64-hex-character SHA-256.";
             case RuleKind.Signature:
-                return rule.MatchValue.Trim().Length >= 3 ? null : "A signature rule needs at least 3 characters of publisher name.";
+                if (rule.MatchValue.Trim().Length < 3)
+                {
+                    return "A signature rule needs at least 3 characters of publisher name.";
+                }
+                // Allow rules match the certificate's Common Name exactly (or its thumbprint), so a pasted
+                // subject DN would never match: say so now rather than store a rule that silently does nothing.
+                return rule.Action == PolicyAction.Allow && rule.MatchValue.Contains('=', StringComparison.Ordinal)
+                    ? "For an allow rule, enter the publisher's Common Name (for example \"Contoso Ltd\") or the signing certificate's thumbprint, not a subject string."
+                    : null;
             case RuleKind.Folder:
+            {
                 // A folder ALLOW on a drive root is a global allow; a BLOCK on a drive root is fine.
-                return IsAcceptableLocalPath(rule.MatchValue, allowDriveRoot: rule.Action == PolicyAction.Block, out _, out string? err) ? null : err;
+                if (!IsAcceptableLocalPath(rule.MatchValue, allowDriveRoot: rule.Action == PolicyAction.Block, out string canonical, out string? err))
+                {
+                    return err;
+                }
+                if (rule.Action != PolicyAction.Allow)
+                {
+                    return null;
+                }
+                // An ALLOW auto-allows (and permanently hash-allows in WDAC) anything launched from the folder,
+                // so only a folder that standard users cannot write to, or swap out, may carry one.
+                if (!Directory.Exists(canonical))
+                {
+                    return "A folder allow rule needs an existing folder, so its permissions can be checked.";
+                }
+                return FolderWriteAccess.FindProblem(canonical) is { } problem
+                    ? "This folder cannot carry an allow rule, because accounts other than SYSTEM and Administrators can change what is in it: "
+                      + problem + " Use a Hash or Signature rule instead, or lock the folder down first."
+                    : null;
+            }
             case RuleKind.Extension:
                 return rule.MatchValue.StartsWith('.') && rule.MatchValue.Length >= 2 && !rule.MatchValue.Any(char.IsWhiteSpace)
                     ? null
@@ -194,6 +228,84 @@ public sealed partial class MgmtRequestHandler : IMgmtHandler
                 return "Rule kind is invalid.";
         }
     }
+
+    /// <summary>
+    /// Stores a rule in the form it is matched in: a folder as its canonical path with a trailing separator
+    /// (so it can only match inside that directory), and a signature allow with its signature requirement
+    /// recorded, since a signature allow only ever matches a verified signature.
+    /// </summary>
+    private static RuleEntry NormalizeRule(RuleEntry rule)
+    {
+        switch (rule.Kind)
+        {
+            case RuleKind.Folder when IsAcceptableLocalPath(rule.MatchValue, allowDriveRoot: true, out string canonical, out _):
+                return rule with { MatchValue = canonical.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar };
+            case RuleKind.Signature when rule.Action == PolicyAction.Allow:
+                return rule with { MatchValue = rule.MatchValue.Trim(), RequireSignature = true };
+            default:
+                return rule with { MatchValue = rule.MatchValue.Trim() };
+        }
+    }
+
+    /// <summary>
+    /// Copies a picked file to a SYSTEM-only snapshot, verifies its Authenticode signature there, and checks the
+    /// signer against a signature allow rule. Returns the snapshot's SHA-256 (which the WDAC step then pins, so
+    /// the bytes allow-listed are the bytes verified), or null with a reason.
+    /// </summary>
+    private (string? Sha256, string? Refusal) VerifySignedSource(string path, string publisher)
+    {
+        string? snapshot = null;
+        try
+        {
+            var info = new FileInfo(path);
+            if ((info.Attributes & FileAttributes.ReparsePoint) != 0)
+            {
+                return (null, "it is a symbolic link or junction.");
+            }
+
+            string dir = WardenPaths.Under("snapshots");
+            Directory.CreateDirectory(dir);
+            snapshot = Path.Combine(dir, $"mgmt_{Guid.NewGuid():N}_{Path.GetFileName(path)}");
+
+            // FileShare.Read: nobody can modify the file while it is being copied.
+            using (var source = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                if (source.Length > MaxVerifyBytes)
+                {
+                    return (null, "the file is larger than the size cap.");
+                }
+                using var target = new FileStream(snapshot, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+                source.CopyTo(target);
+            }
+
+            SignerInfo signer = _inspector.ReadSigner(snapshot);
+            if (!signer.IsTrustedSignature)
+            {
+                return (null, "its signature did not verify (unsigned, self-signed, tampered, or copied from another file).");
+            }
+            if (!RulesEngine.SignatureAllowMatches(publisher, signer))
+            {
+                return (null, $"it is signed by '{signer.SubjectCommonName ?? signer.SubjectName}', not exactly '{publisher}'.");
+            }
+
+            string? sha = _inspector.ComputeSha256(snapshot);
+            return sha is null ? (null, "it could not be hashed.") : (sha, null);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
+        {
+            _logger.LogWarning(ex, "Mgmt: could not verify {Path}.", path);
+            return (null, "it could not be read.");
+        }
+        finally
+        {
+            if (snapshot is not null)
+            {
+                try { File.Delete(snapshot); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            }
+        }
+    }
+
+    private const long MaxVerifyBytes = 256L * 1024 * 1024;
 
     // ---- mutations --------------------------------------------------------------------------------
 
@@ -220,18 +332,29 @@ public sealed partial class MgmtRequestHandler : IMgmtHandler
             return MgmtResponse.Fail(id, invalid);
         }
 
-        long newId = await _rules.AddAsync(rule!, cancellationToken).ConfigureAwait(false);
-        _logger.LogInformation("Mgmt: rule {Id} added ({Kind} {Action}).", newId, rule!.Kind, rule.Action);
+        rule = NormalizeRule(rule!);
+        long newId = await _rules.AddAsync(rule, cancellationToken).ConfigureAwait(false);
+        _logger.LogInformation("Mgmt: rule {Id} added ({Kind} {Action}).", newId, rule.Kind, rule.Action);
 
-        // The dialog told us which file the hash / publisher came from: allow-list THAT file now (for a
-        // Hash rule its bytes must still match the hash; for a Signature rule the picked file is allowed
-        // outright and the rule covers the publisher's other files on their next launch).
+        // The dialog told us which file the hash / publisher came from: allow-list THAT file now. For a
+        // Hash rule its bytes must still match the hash. For a Signature rule the file must carry a verified
+        // signature from exactly that publisher, and the bytes allow-listed are the bytes that were verified.
         if (rule.Action == PolicyAction.Allow && rule.Kind is RuleKind.Hash or RuleKind.Signature
             && !string.IsNullOrWhiteSpace(sourcePath)
             && IsAcceptableLocalPath(sourcePath, allowDriveRoot: false, out string sourceCanonical, out _)
             && File.Exists(sourceCanonical))
         {
-            string? expected = rule.Kind == RuleKind.Hash ? rule.MatchValue : null;
+            string? expected = rule.MatchValue;
+            if (rule.Kind == RuleKind.Signature)
+            {
+                (expected, string? refusal) = VerifySignedSource(sourceCanonical, rule.MatchValue);
+                if (expected is null)
+                {
+                    _logger.LogWarning("Mgmt: rule {Id} source {Path} not allow-listed: {Reason}", newId, sourceCanonical, refusal);
+                    return Message(id, $"Rule added, but {Path.GetFileName(sourceCanonical)} was not allow-listed now: {refusal}");
+                }
+            }
+
             WdacBatchResult batch = await _wdac.AllowManyAsync(
                 new[] { new WdacAllowFile(sourceCanonical, expected) }, cancellationToken).ConfigureAwait(false);
             WdacFileAllowResult r = batch.Files[0];
@@ -292,6 +415,7 @@ public sealed partial class MgmtRequestHandler : IMgmtHandler
         }
 
         var candidates = new List<string>();
+        long totalBytes = 0;
         try
         {
             foreach (string f in Directory.EnumerateFiles(canonical, "*", SearchOption.AllDirectories))
@@ -302,6 +426,12 @@ public sealed partial class MgmtRequestHandler : IMgmtHandler
                 }
                 if (IsPeCandidate(f))
                 {
+                    // Every candidate is copied into the WDAC work folder: cap the total, not just the count.
+                    totalBytes += new FileInfo(f).Length;
+                    if (totalBytes > MaxBulkAllowBytes)
+                    {
+                        break;
+                    }
                     candidates.Add(f);
                 }
             }
@@ -332,11 +462,14 @@ public sealed partial class MgmtRequestHandler : IMgmtHandler
             return $"Rule added, but the WDAC deployment failed ({batch.Error}). Files will be allowed on their next launch.";
         }
 
-        string more = candidates.Count >= MaxBulkAllowFiles ? $" (stopped at the {MaxBulkAllowFiles}-file cap; the rest are allowed on launch)" : string.Empty;
+        string more = candidates.Count >= MaxBulkAllowFiles || totalBytes > MaxBulkAllowBytes
+            ? " (stopped at the size or file-count cap; the rest are allowed on launch)"
+            : string.Empty;
         return $"Rule added and {recorded} file(s) allow-listed in WDAC now, {batch.Skipped} skipped{more}. Relaunch the app.";
     }
 
     private const int MaxBulkAllowFiles = 500;
+    private const long MaxBulkAllowBytes = 2L * 1024 * 1024 * 1024;
 
     private static readonly HashSet<string> PeExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
