@@ -96,18 +96,51 @@ public sealed class WdacPolicyXmlTests
     public void Ledger_round_trips_and_merges()
     {
         var ledger = new AllowRuleLedger();
-        ledger.Record("abc", new[] { "ID_1", "ID_2" });
-        ledger.Record("ABC", new[] { "ID_3" });     // same hash, different case → merged
-        ledger.Record("def", new[] { "ID_9" });
+        ledger.RecordHashes("abc", new[] { "aa11", "BB22" });
+        ledger.RecordHashes("ABC", new[] { "cc33" });     // same flat hash, different case → merged
+        ledger.RecordHashes("def", new[] { "DD44" });
 
         AllowRuleLedger back = AllowRuleLedger.FromJson(ledger.ToJson());
-        Assert.Equal(new[] { "ID_1", "ID_2", "ID_3" }, back.RulesFor("abc").OrderBy(s => s));
-        Assert.Equal(new[] { "ID_9" }, back.RulesFor("DEF"));
-        Assert.Empty(back.RulesFor("nope"));
+        Assert.Equal(new[] { "AA11", "BB22", "CC33" }, back.HashesFor("abc").OrderBy(s => s));
+        Assert.Equal(new[] { "DD44" }, back.HashesFor("DEF"));
+        Assert.Empty(back.HashesFor("nope"));
+        Assert.False(back.HasEntry("nope"));
 
         back.Remove("abc");
-        Assert.Empty(back.RulesFor("ABC"));
-        Assert.Empty(AllowRuleLedger.FromJson("{ not json").RulesFor("abc"));
+        Assert.Empty(back.HashesFor("ABC"));
+        Assert.Empty(AllowRuleLedger.FromJson("{ not json").HashesFor("abc"));
+    }
+
+    [Fact]
+    public void Given_a_legacy_id_only_ledger_When_parsing_Then_its_ids_are_kept_as_legacy_entries()
+    {
+        Assert.True(AllowRuleLedger.TryParse("{ \"ABC\": [\"ID_ALLOW_A_1\", \"ID_ALLOW_A_2\"] }", out AllowRuleLedger ledger, out string? error), error);
+
+        Assert.Equal(new[] { "ID_ALLOW_A_1", "ID_ALLOW_A_2" }, ledger.LegacyRuleIdsFor("abc").OrderBy(s => s));
+        Assert.Empty(ledger.HashesFor("abc"));
+        Assert.True(ledger.HasEntry("abc"));
+        // Rewritten in the current format, the legacy IDs survive.
+        Assert.Equal(new[] { "ID_ALLOW_A_1", "ID_ALLOW_A_2" }, AllowRuleLedger.FromJson(ledger.ToJson()).LegacyRuleIdsFor("ABC").OrderBy(s => s));
+    }
+
+    [Theory]
+    [InlineData("{ not json")]
+    [InlineData("[1, 2]")]
+    [InlineData("{ \"ABC\": 42 }")]
+    public void Given_text_that_is_not_a_ledger_When_parsing_Then_it_is_reported_not_treated_as_empty(string json)
+    {
+        Assert.False(AllowRuleLedger.TryParse(json, out _, out string? error));
+        Assert.False(string.IsNullOrEmpty(error));
+    }
+
+    [Fact]
+    public void Hash_lookups_find_rules_by_hash_value_not_id()
+    {
+        XDocument doc = Sample();
+        Assert.Equal(new[] { "ID_ALLOW_A_1", "ID_ALLOW_A_2" }, SupplementalPolicyXml.AllowRuleIdsByHash(doc, new[] { "aa", "BB" }).OrderBy(s => s));
+        Assert.Equal(new[] { "AA", "BB" }, SupplementalPolicyXml.AllowRuleHashesForScannedFile(doc, @"C:\ProgramData\Warden\wdac\scan\tool.exe").OrderBy(s => s));
+        Assert.Equal(new[] { "CC" }, SupplementalPolicyXml.AllowRuleHashesById(doc, new[] { "ID_ALLOW_A_3", "ID_GONE" }));
+        Assert.Equal(new[] { "AA", "BB", "CC" }, SupplementalPolicyXml.AllowRuleHashes(doc).OrderBy(s => s));
     }
 
     [Fact]
@@ -115,6 +148,17 @@ public sealed class WdacPolicyXmlTests
     {
         Assert.Equal("'a'", WdacAllowlistManager.Ps("a"));
         Assert.Equal("'it''s;'' -bad'", WdacAllowlistManager.Ps("it's;' -bad"));
+    }
+
+    [Theory]
+    [InlineData('\u2018')]
+    [InlineData('\u2019')]
+    [InlineData('\u201A')]
+    [InlineData('\u201B')]
+    public void Given_a_typographic_single_quote_When_quoting_for_PowerShell_Then_it_is_doubled_like_an_ascii_quote(char quote)
+    {
+        // PowerShell ends a single-quoted string at any of these; doubled, each is one literal character.
+        Assert.Equal($"'x{quote}{quote}; calc {quote}{quote}'", WdacAllowlistManager.Ps($"x{quote}; calc {quote}"));
     }
 
     [Fact]

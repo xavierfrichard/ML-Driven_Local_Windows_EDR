@@ -22,8 +22,18 @@ Only the small **supplemental** lives here as source.
 
 The base policy XML, the compiled `.cip` binaries, and the working copies of
 these files are produced by `scripts/Deploy-WardenSpikePolicy.ps1` into a
-working directory (default `%USERPROFILE%\WardenSpikeLab\policy`); they are not
+working directory (default `%ProgramData%\WardenSpikeLab\policy`); they are not
 checked in.
+
+The work folder is **admin-only**: the script creates `%ProgramData%\WardenSpikeLab`,
+owns it as Administrators, gives it a protected SYSTEM + Administrators ACL, and
+empties `policy\` at the start of every run. It refuses a lab folder that someone
+else pre-created, a junction, or a `-WorkDir` outside the lab folder. Nothing it
+compiles or deploys is read back from a user-writable place: the base is
+regenerated from the Microsoft template on every run, and the lab binaries
+(which do live in the user's profile) are copied into the admin-only folder and
+checked against a SHA-256 pin (`-LabExeSha256`, `-WardenSpikeToolSha256`) before
+they are hashed into the supplemental.
 
 ---
 
@@ -39,9 +49,12 @@ So Warden does **not** hand-author the base. The deploy script instead:
    `C:\Windows\schemas\CodeIntegrity\ExamplePolicies\DefaultWindows_Audit.xml`
    (which already safely allows Windows OS components, Store/MSIX-signed apps,
    WHQL drivers, and core Microsoft apps) to a working file.
-2. Resets it to a brand-new **base** GUID with
-   `Set-CIPolicyIdInfo -ResetPolicyID` (sets both `PolicyID` and `BasePolicyID`
-   to the same fresh random GUID â€” that self-reference is what makes it a base).
+2. Converts it to multiple-policy format with `Set-CIPolicyIdInfo -ResetPolicyID`,
+   then sets both `PolicyID` and `BasePolicyID` to the spike's fixed base ID
+   `{77EEF7EE-839E-49F6-ADF1-3BD853A234B1}` - that self-reference is what makes it
+   a base, and the fixed ID makes every run update the same deployed base. This
+   happens on **every run**; a base XML left from an earlier run is never reused.
+   `VersionEx` is set above the version CiTool reports for the deployed base.
 3. Guarantees the rule options Warden needs:
    - `3  Enabled:Audit Mode` â€” **present on first run (audit-first)**.
    - `6  Enabled:Unsigned System Integrity Policy` â€” unsigned â‡’ rebootless.
@@ -85,7 +98,7 @@ bumped. Warden always crosses the auditâ†’enforce line deliberately, on the
 `-Enforce` is **gated so it can never run on a first, unobserved deployment**. It
 is refused unless **both**:
 
-- a prior **audit base** already exists on disk (`WardenBase.xml`), and
+- the spike **audit base** is already deployed (CiTool reports its PolicyID), and
 - the operator passes a second explicit switch, **`-IHaveReviewedAuditEvents`**.
 
 Without this, `-Enforce` on a fresh machine would create the base and strip Audit
@@ -97,10 +110,11 @@ the observe-then-enforce ordering mandatory.
 
 An enforce base allows only Windows/Store/Microsoft-signed code, so it would
 block the **user-built, unsigned `Warden.Spike` reader** the spike depends on
-(goal #3). To prevent that self-lockout, the deploy script automatically folds
+(goal #3). To prevent that self-lockout, the deploy script folds
 the reader's hash (`-WardenSpikeToolPath`, default
 `%USERPROFILE%\WardenSpikeLab\Warden.Spike.exe`) into the supplemental allow-set
-whenever the exe exists â€” so flipping to enforce never blocks the reader. If the
+whenever the exe exists and `-WardenSpikeToolSha256` pins it (an unpinned reader
+is not allowed, with a warning) â€” so flipping to enforce never blocks the reader. If the
 exe is not present at enforce time the script warns that it must be re-run once
 the reader is built.
 
@@ -138,16 +152,24 @@ GUIDs:
 ```
 BASE policy (WardenBase, from DefaultWindows_Audit):
     PolicyType   = "Base Policy"
-    PolicyID     = {B}   <-- fresh random GUID from Set-CIPolicyIdInfo -ResetPolicyID
+    PolicyID     = {B}   <-- the spike's fixed base GUID
+                            ({77EEF7EE-839E-49F6-ADF1-3BD853A234B1})
     BasePolicyID = {B}   <-- equals its own PolicyID (self-reference == "I am a base")
     Rules        include option 17 (Allow Supplemental Policies)
 
 SUPPLEMENTAL policy (WardenSpike.Supplemental.xml):
     PolicyType   = "Supplemental Policy"
     PolicyID     = {S}   <-- this supplemental's OWN fixed GUID
-                            ({7A4D1C0A-5B2E-4F6A-9C3D-000000000001})
+                            ({591A5539-3983-4C77-92B7-583045489C23})
     BasePolicyID = {B}   <-- points at the BASE's PolicyID  ==  the linkage
 ```
+
+The Warden **service** deploys its own allow-list supplemental under a different
+fixed ID, `{7A4D1C0A-5B2E-4F6A-9C3D-000000000001}`. The spike supplemental must
+never reuse it (two policies with one PolicyID overwrite each other); the deploy
+script refuses to run if `WardenSpike.Supplemental.xml` carries that ID. Older
+spike runs did use it: run `Remove-WardenSpikePolicy.ps1` once before deploying
+with this version.
 
 Rules of thumb:
 
@@ -179,7 +201,10 @@ and **HVCI-off**, all deploys and removals are reboot-free:
 
 The deploy script prints the exact `CiTool --remove-policy {GUID}` commands for
 whatever it deployed; `scripts/Remove-WardenSpikePolicy.ps1` finds and removes
-all Warden policies automatically.
+the spike's policies (its fixed IDs, or a "Warden Spike" friendly name). It does
+not remove the Warden service's supplemental by name; if that supplemental still
+expands the spike base, the script stops and names it (`-IncludeDependentSupplementals`
+removes it too).
 
 ---
 
@@ -188,8 +213,9 @@ all Warden policies automatically.
 ```powershell
 # In an elevated PowerShell, inside the isolated Windows 11 VM:
 
-# 1. Create a harmless lab exe that will be blocked.
+# 1. Create a harmless lab exe that will be blocked. It prints the SHA-256 pin.
 .\scripts\New-WardenLabExe.ps1
+$pin = '<the SHA-256 it printed>'
 
 # 2. Deploy the AUDIT base. The lab exe is now would-be-blocked -> event 3076.
 .\scripts\Deploy-WardenSpikePolicy.ps1 -IUnderstandVmOnly
@@ -197,12 +223,12 @@ all Warden policies automatically.
 #    Microsoft-Windows-CodeIntegrity/Operational...
 
 # 3. (Warden loop) Deploy the supplemental that allows the exe by hash.
-.\scripts\Deploy-WardenSpikePolicy.ps1 -IUnderstandVmOnly -DeploySupplemental
+.\scripts\Deploy-WardenSpikePolicy.ps1 -IUnderstandVmOnly -DeploySupplemental -LabExeSha256 $pin
 #    ...hello.exe now runs (union of allows)...
 
 # 4. (Optional) Flip the base to ENFORCE. Requires a prior audit base AND the
 #    reviewed-events switch. Now the block is real -> event 3077.
-.\scripts\Deploy-WardenSpikePolicy.ps1 -IUnderstandVmOnly -Enforce -IHaveReviewedAuditEvents
+.\scripts\Deploy-WardenSpikePolicy.ps1 -IUnderstandVmOnly -Enforce -IHaveReviewedAuditEvents -LabExeSha256 $pin
 
 # 5. Roll everything back to a clean machine.
 .\scripts\Remove-WardenSpikePolicy.ps1 -IUnderstandVmOnly

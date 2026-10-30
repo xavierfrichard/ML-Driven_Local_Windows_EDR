@@ -1,5 +1,3 @@
-using System.Globalization;
-using System.Text.Json;
 using System.Xml.Linq;
 
 namespace Warden.Wdac;
@@ -153,6 +151,120 @@ public static class SupplementalPolicyXml
         return next;
     }
 
+    /// <summary>
+    /// <c>Hash</c> values of the <c>&lt;Allow&gt;</c> rules whose <c>FriendlyName</c> starts with
+    /// "<paramref name="scannedPath"/> Hash": the rules New-CIPolicy generated for that one scanned file.
+    /// </summary>
+    public static IReadOnlySet<string> AllowRuleHashesForScannedFile(XDocument doc, string scannedPath)
+    {
+        ArgumentNullException.ThrowIfNull(doc);
+        var hashes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrEmpty(scannedPath))
+        {
+            return hashes;
+        }
+
+        string prefix = scannedPath + " Hash";
+        foreach (XElement allow in AllowRules(doc))
+        {
+            string? name = (string?)allow.Attribute("FriendlyName");
+            string? hash = (string?)allow.Attribute("Hash");
+            if (name is not null && !string.IsNullOrEmpty(hash) && name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                hashes.Add(hash.ToUpperInvariant());
+            }
+        }
+        return hashes;
+    }
+
+    /// <summary>Every <c>Hash</c> value carried by an <c>&lt;Allow&gt;</c> rule (upper-case hex).</summary>
+    public static IReadOnlySet<string> AllowRuleHashes(XDocument doc)
+    {
+        ArgumentNullException.ThrowIfNull(doc);
+        var hashes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (XElement allow in AllowRules(doc))
+        {
+            if ((string?)allow.Attribute("Hash") is { Length: > 0 } hash)
+            {
+                hashes.Add(hash.ToUpperInvariant());
+            }
+        }
+        return hashes;
+    }
+
+    /// <summary>IDs of the <c>&lt;Allow&gt;</c> rules whose <c>Hash</c> is one of <paramref name="hashes"/>.</summary>
+    public static IReadOnlySet<string> AllowRuleIdsByHash(XDocument doc, IEnumerable<string> hashes)
+    {
+        ArgumentNullException.ThrowIfNull(doc);
+        ArgumentNullException.ThrowIfNull(hashes);
+        var wanted = new HashSet<string>(hashes, StringComparer.OrdinalIgnoreCase);
+        var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (XElement allow in AllowRules(doc))
+        {
+            if ((string?)allow.Attribute("ID") is { Length: > 0 } id
+                && (string?)allow.Attribute("Hash") is { Length: > 0 } hash
+                && wanted.Contains(hash))
+            {
+                ids.Add(id);
+            }
+        }
+        return ids;
+    }
+
+    /// <summary><c>Hash</c> values of the <c>&lt;Allow&gt;</c> rules with the given IDs (resolves legacy ID-only ledger entries).</summary>
+    public static IReadOnlySet<string> AllowRuleHashesById(XDocument doc, IEnumerable<string> ruleIds)
+    {
+        ArgumentNullException.ThrowIfNull(doc);
+        ArgumentNullException.ThrowIfNull(ruleIds);
+        var wanted = new HashSet<string>(ruleIds, StringComparer.OrdinalIgnoreCase);
+        var hashes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (XElement allow in AllowRules(doc))
+        {
+            if ((string?)allow.Attribute("ID") is { Length: > 0 } id && wanted.Contains(id)
+                && (string?)allow.Attribute("Hash") is { Length: > 0 } hash)
+            {
+                hashes.Add(hash.ToUpperInvariant());
+            }
+        }
+        return hashes;
+    }
+
+    /// <summary>The <c>&lt;VersionEx&gt;</c> value, or null.</summary>
+    public static string? GetVersion(XDocument doc)
+    {
+        ArgumentNullException.ThrowIfNull(doc);
+        return doc.Root?.Element(Ns + "VersionEx")?.Value.Trim();
+    }
+
+    /// <summary>Sets <c>&lt;VersionEx&gt;</c> (orders a compensating redeploy after a newer deploy).</summary>
+    public static void SetVersion(XDocument doc, string version) => SetElement(doc, "VersionEx", version, first: true);
+
+    /// <summary>Sets <c>&lt;BasePolicyID&gt;</c> in memory (the real linkage is done by Set-CIPolicyIdInfo).</summary>
+    public static void SetBasePolicyId(XDocument doc, string baseGuid) => SetElement(doc, "BasePolicyID", baseGuid, first: false);
+
+    private static void SetElement(XDocument doc, string name, string value, bool first)
+    {
+        ArgumentNullException.ThrowIfNull(doc);
+        ArgumentException.ThrowIfNullOrWhiteSpace(value);
+        XElement root = doc.Root ?? throw new InvalidOperationException("Policy XML has no root element.");
+        XElement? element = root.Element(Ns + name);
+        if (element is not null)
+        {
+            element.Value = value;
+        }
+        else if (first)
+        {
+            root.AddFirst(new XElement(Ns + name, value));
+        }
+        else
+        {
+            root.Add(new XElement(Ns + name, value));
+        }
+    }
+
+    private static IEnumerable<XElement> AllowRules(XDocument doc) =>
+        doc.Descendants(Ns + "FileRules").Elements(Ns + "Allow");
+
     /// <summary>The policy's own ID (the <c>&lt;PolicyID&gt;</c> element), or null.</summary>
     public static string? PolicyId(XDocument doc)
     {
@@ -166,97 +278,4 @@ public static class SupplementalPolicyXml
         ArgumentNullException.ThrowIfNull(doc);
         return doc.Root?.Element(Ns + "BasePolicyID")?.Value.Trim();
     }
-}
-
-/// <summary>
-/// Maps a flat SHA-256 (what the pipeline and whitelist track) to the ConfigCI rule IDs that
-/// <c>New-CIPolicy</c> generated for that file, so a revoke can remove exactly those rules. Persisted as
-/// JSON next to the supplemental. Without this, the Authenticode/page hashes in the policy could not be
-/// tied back to the flat hash.
-/// </summary>
-public sealed class AllowRuleLedger
-{
-    private readonly Dictionary<string, HashSet<string>> _map = new(StringComparer.OrdinalIgnoreCase);
-
-    /// <summary>Rule IDs recorded for the hash (empty when unknown).</summary>
-    public IReadOnlyCollection<string> RulesFor(string sha256)
-    {
-        ArgumentNullException.ThrowIfNull(sha256);
-        return _map.TryGetValue(sha256, out HashSet<string>? ids) ? ids : Array.Empty<string>();
-    }
-
-    /// <summary>Associates rule IDs with a hash (merged with any existing entry).</summary>
-    public void Record(string sha256, IEnumerable<string> ruleIds)
-    {
-        ArgumentNullException.ThrowIfNull(sha256);
-        ArgumentNullException.ThrowIfNull(ruleIds);
-        if (!_map.TryGetValue(sha256, out HashSet<string>? ids))
-        {
-            ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            _map[sha256] = ids;
-        }
-        foreach (string id in ruleIds)
-        {
-            ids.Add(id);
-        }
-    }
-
-    /// <summary>Forgets a hash.</summary>
-    public void Remove(string sha256)
-    {
-        ArgumentNullException.ThrowIfNull(sha256);
-        _map.Remove(sha256);
-    }
-
-    /// <summary>Number of hashes tracked.</summary>
-    public int Count => _map.Count;
-
-    /// <summary>Serializes to JSON.</summary>
-    public string ToJson() =>
-        JsonSerializer.Serialize(_map.ToDictionary(kv => kv.Key, kv => kv.Value.OrderBy(s => s, StringComparer.Ordinal).ToArray(), StringComparer.OrdinalIgnoreCase),
-            new JsonSerializerOptions { WriteIndented = true });
-
-    /// <summary>Parses JSON produced by <see cref="ToJson"/>; malformed input yields an empty ledger.</summary>
-    public static AllowRuleLedger FromJson(string? json)
-    {
-        var ledger = new AllowRuleLedger();
-        if (string.IsNullOrWhiteSpace(json))
-        {
-            return ledger;
-        }
-
-        try
-        {
-            Dictionary<string, string[]>? raw = JsonSerializer.Deserialize<Dictionary<string, string[]>>(json);
-            if (raw is not null)
-            {
-                foreach ((string sha, string[] ids) in raw)
-                {
-                    ledger.Record(sha, ids ?? Array.Empty<string>());
-                }
-            }
-        }
-        catch (JsonException)
-        {
-            // Corrupt ledger: start empty; revoke falls back to friendly-name matching.
-        }
-        return ledger;
-    }
-
-    /// <summary>Loads from a file (empty when missing).</summary>
-    public static AllowRuleLedger Load(string path)
-    {
-        ArgumentNullException.ThrowIfNull(path);
-        return File.Exists(path) ? FromJson(File.ReadAllText(path)) : new AllowRuleLedger();
-    }
-
-    /// <summary>Saves to a file.</summary>
-    public void Save(string path)
-    {
-        ArgumentNullException.ThrowIfNull(path);
-        File.WriteAllText(path, ToJson());
-    }
-
-    /// <summary>Formats a version for the ledger's own use.</summary>
-    internal static string Stamp() => DateTimeOffset.UtcNow.ToString("yyyyMMdd_HHmmss_fff", CultureInfo.InvariantCulture);
 }
